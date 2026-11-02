@@ -46,7 +46,7 @@ dependencies = [
   "charset-normalizer==3.4.9",
   "idna==3.18",
   "urllib3==2.7.0",
-  "certifi==2026.6.17",
+  "certifi==2026.10.18",
   "oauthlib==3.3.1",
   "PyJWT==2.13.0",
   "blinker==1.9.0",
