@@ -7,7 +7,7 @@ license = "MIT"
 dependencies = [
   "apprise==1.12.0",
   "sabctools==9.6.3",
-  "CT3==3.4.0.post5",
+  "ct3==3.4.0.post5",
   "cffi==2.1.0",
   "pycparser==3.0",
   "feedparser==6.0.12",
@@ -27,7 +27,7 @@ dependencies = [
   "pytz==2026.2",
   "sgmllib3k==1.0.0",
   "portend==3.2.1",
-  "PySocks==1.7.1",
+  "pysocks==1.7.1",
   "puremagic==2.2.0",
   "rarfile==4.3",
   "guessit==4.1.0",
@@ -40,20 +40,20 @@ dependencies = [
   "notify2==0.3.1; sys_platform == 'linux'",
   "requests==2.34.2",
   "requests-oauthlib==2.0.0",
-  "PyYAML==6.0.3",
+  "pyyaml==6.0.3",
   "markdown==3.10.2",
   "paho-mqtt==2.1.0",
   "charset-normalizer==3.4.9",
   "idna==3.18",
-  "urllib3==2.7.0",
-  "certifi==2026.6.17",
-  "oauthlib==3.3.1",
-  "PyJWT==2.13.0",
+  "urllib3==2.8.0",
+  "certifi==2026.10.23",
+  "oauthlib==4.0.1",
+  "pyjwt==2.15.1",
   "blinker==1.9.0",
 ]
 
 [dependency-groups]
-dev = ["ruff==0.17.0", "PyYAML==6.0.3"]
+dev = ["ruff==0.17.0", "pyyaml==6.0.3"]
 
 [tool.uv]
 package = false

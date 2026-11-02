@@ -126,7 +126,12 @@ impl Secrets {
             ("HTTP_CONTROL_SERVER_ADDRESS", "127.0.0.1:8000"),
             ("HEALTH_SERVER_ADDRESS", "127.0.0.1:9999"),
             ("FIREWALL_INPUT_PORTS", "8080,8099,8888"),
-            ("LOG_LEVEL", "warning"),
+            ("LOG_LEVEL", "warn"),
+            // Gluetun3.41.3 dereferences these rates before applying its defaults.
+            ("PPROF_ENABLED", "no"),
+            ("PPROF_BLOCK_PROFILE_RATE", "0"),
+            ("PPROF_MUTEX_PROFILE_RATE", "0"),
+            ("PPROF_HTTP_SERVER_ADDRESS", "127.0.0.1:6060"),
             ("PUID", "0"),
             ("PGID", "0"),
         ]);

@@ -26,6 +26,7 @@ web:
 
 security:
     cargo deny --config .github/deny.toml check advisories licenses sources
+    uv audit --locked --python-version 3.12 --python-platform linux
 
 openapi:
     mkdir -p work

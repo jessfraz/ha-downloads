@@ -34,6 +34,26 @@ docker run --rm --network none --cap-drop ALL --entrypoint /bin/sh "$image" -ec 
     python -c "import sabctools, cherrypy, cryptography; import ssl; assert ssl.OPENSSL_VERSION"
 '
 docker run --rm --network none --cap-drop ALL "$image" --version
+docker run --rm --interactive --network none --cap-drop ALL --entrypoint python "$image" - <<'PY'
+import certifi
+import jwt
+from oauthlib.oauth2 import WebApplicationClient
+from requests_oauthlib import OAuth2Session
+import secrets
+import ssl
+import urllib3
+
+ssl.create_default_context(cafile=certifi.where())
+pool = urllib3.PoolManager(cert_reqs="CERT_REQUIRED", ca_certs=certifi.where())
+assert pool.connection_from_url("https://downloads.example/api").host == "downloads.example"
+token = {"access_token": secrets.token_hex(16), "token_type": "Bearer"}
+client = WebApplicationClient("downloads-fixture", token=token)
+assert client.add_token("https://downloads.example/api")[1]["Authorization"] == "Bearer " + token["access_token"]
+assert OAuth2Session("downloads-fixture", token=token).authorized
+key = secrets.token_bytes(32)
+encoded = jwt.encode({"sub": "downloads-fixture"}, key, algorithm="HS256")
+assert jwt.decode(encoded, key, algorithms=["HS256"])["sub"] == "downloads-fixture"
+PY
 docker run --rm --network none --cap-drop ALL "$image" openapi > "$scratch/openapi.json"
 python3 - "$scratch" <<'PY'
 import json

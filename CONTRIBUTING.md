@@ -21,6 +21,9 @@ SABnzbd dependencies are pinned from its upstream requirements in
 `pyproject.toml` and resolved by `uv lock`. When updating, review upstream
 requirements and security releases, refresh the source archive SHA256 and image
 digests, and rerun both architecture builds. `NOTICE` describes bundled code.
+Security fixes may advance dependency pins beyond the upstream requirements;
+validate SABnzbd against the resulting lock. Keep package names lowercase to
+avoid [Dependabot's uv case-matching bug](https://github.com/dependabot/dependabot-core/issues/14119).
 
 Release versions must match Cargo, `pyproject.toml`, and `downloads/config.yaml`.
 The release check also requires the tag to be `v` followed by that version.

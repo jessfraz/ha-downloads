@@ -1,8 +1,9 @@
 # Each base is pinned to an upstream multiarch index (amd64 and arm64).
 FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
-FROM rust:1.99.1-alpine3.22@sha256:0fd356c1b3a83a6a6a2a4113ede8166eac6697a663fa822c04f0c202e63fcc01 AS python-build
+FROM rust:1.99.1-alpine3.22@sha256:0fd356c1b3a83a6a6a2a4113ede8166eac6697a663fa822c04f0c202e63fcc01 AS native-build
 
 RUN apk add --no-cache build-base pkgconf python3 python3-dev libffi-dev openssl-dev curl
+FROM native-build AS python-build
 COPY --from=uv /uv /uvx /usr/local/bin/
 WORKDIR /build/python
 COPY pyproject.toml uv.lock ./
@@ -35,7 +36,7 @@ RUN curl --fail --location --retry 3 --output /opt/licenses/gluetun.txt \
       https://raw.githubusercontent.com/passteque/gluetun/v3.41.3/LICENSE \
     && echo "081820bd14b0013f5b7868ea217caf2c3186d9af67bfd49ab02639c258384b45  /opt/licenses/gluetun.txt" | sha256sum -c -
 
-FROM python-build AS build
+FROM native-build AS build
 WORKDIR /build/app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
