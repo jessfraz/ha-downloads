@@ -1,5 +1,5 @@
 # Each base is pinned to an upstream multiarch index (amd64 and arm64).
-FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
 FROM rust:1.99.1-alpine3.22@sha256:0fd356c1b3a83a6a6a2a4113ede8166eac6697a663fa822c04f0c202e63fcc01 AS native-build
 
 RUN apk add --no-cache build-base pkgconf python3 python3-dev libffi-dev openssl-dev curl
