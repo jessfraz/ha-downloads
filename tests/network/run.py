@@ -85,11 +85,11 @@ def app_status(app: str) -> dict[str, object]:
     return json.loads(response.stdout) if response.returncode == 0 else {}
 
 
-def is_ready(app: str) -> bool:
+def is_state(app: str, expected: str) -> bool:
     state = app_status(app)
     if state.get("state") == "degraded" and state.get("downloader", {}).get("state") == "stopped":
         raise RuntimeError("Production runtime stopped its protected children: " + str(state))
-    return state.get("state") == "ready"
+    return state.get("state") == expected
 
 
 def main() -> dict[str, object]:
@@ -228,7 +228,8 @@ verb 3
 """
     (TEMP / "server.conf").write_text(server_config)
     data = TEMP / "data"
-    (data / "openvpn").mkdir(parents=True, mode=0o700)
+    data.mkdir(mode=0o700)
+    (data / "openvpn").mkdir(mode=0o700)
     client = (
         "client\ndev tun\nproto udp\nremote 198.19.0.2 1194\nnobind\npersist-key\n"
         "persist-tun\nremote-cert-tls server\nauth-nocache\nverb 3\n"
@@ -313,6 +314,54 @@ exec sleep 600
         "ip -6 route replace default via fd12:3456:789a::3; exec sleep 600",
     )
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "control")
+    # Native Linux bind mounts retain the host UID. Transfer only this fixture's
+    # two generated files and their private directories to the app's root user.
+    helper = docker(
+        "create",
+        "--label",
+        LABEL,
+        "--network",
+        "none",
+        "--user",
+        "0:0",
+        "-v",
+        f"{TEMP}:/fixture",
+        "--entrypoint",
+        "/opt/venv/bin/python",
+        TEST_IMAGE,
+        "-c",
+        """import json,os,pathlib,stat,sys
+root=pathlib.Path('/fixture');marker=root/'.owner'
+assert stat.S_ISREG(marker.lstat().st_mode) and marker.lstat().st_nlink==1
+assert marker.read_text()==sys.argv[1]
+data=root/'data'
+initial_uid=(data/'openvpn/custom.conf').lstat().st_uid
+expected={'openvpn','openvpn/custom.conf','options.json'}
+assert {str(path.relative_to(data)) for path in data.rglob('*')}==expected
+for relative in ('data','data/openvpn','data/openvpn/custom.conf','data/options.json'):
+ path=root/relative;metadata=path.lstat()
+ directory=relative in ('data','data/openvpn')
+ assert stat.S_ISDIR(metadata.st_mode) if directory else (
+  stat.S_ISREG(metadata.st_mode) and metadata.st_nlink==1)
+ assert stat.S_IMODE(metadata.st_mode)==(0o700 if directory else 0o600)
+ os.chown(path,0,0,follow_symlinks=False)
+ assert path.lstat().st_uid==0 and path.lstat().st_gid==0
+print(json.dumps({'initial_uid':initial_uid,'root_owned':True}))
+""",
+        NONCE,
+    ).stdout.strip()
+    CONTAINERS.append(helper)
+    ownership = json.loads(docker("start", "--attach", helper).stdout)
+    assert ownership["root_owned"] is True
+    print(
+        json.dumps(
+            {
+                "generated_data_initial_uid": ownership["initial_uid"],
+                "generated_data_root_ownership_verified": True,
+            }
+        ),
+        flush=True,
+    )
     app = start(
         "downloads-app-" + NONCE,
         "--network",
@@ -332,7 +381,7 @@ exec sleep 600
         "ip route replace default via 198.19.0.2; "
         "ip -6 route replace default via fd12:3456:789a::3; exec /usr/local/bin/downloads serve",
     )
-    wait(lambda: app_status(app).get("state") == "starting", "runtime waits for VPN")
+    wait(lambda: is_state(app, "starting"), "runtime waits for VPN")
     sab_pids = (
         "import pathlib;print([int(p.parent.name) for p in "
         "pathlib.Path('/proc').glob('[0-9]*/cmdline') "
@@ -351,7 +400,7 @@ exec sleep 600
         "/tmp/test-vpn.pid",
     )
     wait(
-        lambda: is_ready(app),
+        lambda: is_state(app, "ready"),
         "real runtime VPN/firewall/DNS and SAB readiness",
     )
     execute(
@@ -391,7 +440,7 @@ call('pause');assert call('queue')['queue']['paused'] is True
     assert dns_failure["state"] == "degraded", dns_failure
     assert dns_failure["downloader"]["state"] == "running", dns_failure
     execute(server, "rm", "/tmp/dns-fail")
-    wait(lambda: is_ready(app), "DNS answers recover")
+    wait(lambda: is_state(app, "ready"), "DNS answers recover")
     # A stopped upstream is a real tunnel outage. No namespace or production firewall is edited.
     execute(server, "/bin/sh", "-c", "kill -TERM $(cat /tmp/test-vpn.pid)")
     wait(
@@ -413,7 +462,7 @@ call('pause');assert call('queue')['queue']['paused'] is True
         "--writepid",
         "/tmp/test-vpn.pid",
     )
-    wait(lambda: is_ready(app), "VPN reconnects without resuming queue")
+    wait(lambda: is_state(app, "ready"), "VPN reconnects without resuming queue")
     execute(app, "/opt/venv/bin/python", "-c", sab_pause.replace("call('pause');", ""))
     execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "up")
     # Abrupt loss of Gluetun must stop SAB; it cannot leave a downloader behind.
@@ -479,6 +528,8 @@ print(json.dumps(children))
         "child_exit_stopped_downloader": True,
         "separate_group_stopped_openvpn_killed_and_reaped": True,
         "cold_start_gated": True,
+        "generated_data_root_ownership_verified": True,
+        "generated_data_initial_uid": ownership["initial_uid"],
         "dns_tls_and_origin_observed_through_tunnel": True,
         "http_connect_proxy_up_and_failclosed": True,
         "unauthenticated_gluetun_controls_rejected": True,

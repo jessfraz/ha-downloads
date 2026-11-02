@@ -65,6 +65,14 @@ jobs:
         run: scripts/container-smoke.sh ha-downloads:smoke "$EXPECTED_ARCH"
       - name: Verify tunnel isolation with disposable local VPN fixtures
         run: scripts/network-test.sh ha-downloads:smoke
+      - name: Retain disposable fixture diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: network-failure-${{ matrix.arch }}
+          path: work/network-*.log
+          if-no-files-found: ignore
+          retention-days: 1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:

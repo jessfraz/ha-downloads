@@ -211,7 +211,7 @@ async fn serve(args: Serve) -> Result<ExitCode> {
             signal=shutdown_signal()=>signal?,
             result=task=>{
                 let _=result;
-                tx.send_replace(Status::degraded("","The protection service stopped. Check the app log and restart it.",false));
+                tx.send_replace(Status::degraded("","The protection service stopped. Check the app settings and restart it.",false));
                 shutdown_signal().await?;
                 runtime=None;
             }
