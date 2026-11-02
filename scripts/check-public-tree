@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Reject accidental credential and deployment artifacts in the public tree."""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+FORBIDDEN = {"options.json", "credentials.json", ".env"}
+EXCLUDED = {".git", ".venv", ".direnv", "target", "work", ".ruff_cache", "__pycache__"}
+PRIVATE_CONTENT = re.compile(
+    rb"(?m)^-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|"
+    rb"\bgh[pousr]_[A-Za-z0-9]{30,}\b|\.ts\.net\b|/Users/[A-Za-z0-9._-]+/"
+)
+
+
+def main() -> None:
+    result = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+    )
+    paths = {Path(name.decode()) for name in result.stdout.split(b"\0") if name}
+    failures = []
+    for relative in sorted(paths):
+        if any(part in EXCLUDED for part in relative.parts):
+            continue
+        if (
+            relative.name in FORBIDDEN
+            or relative.suffix in {".key", ".pem", ".log", ".db", ".sqlite", ".sqlite3"}
+            or relative.parts[0] in {"private", "deployment"}
+        ):
+            failures.append(str(relative))
+            continue
+        path = ROOT / relative
+        if path.is_symlink():
+            failures.append(str(relative))
+        elif path.is_file() and PRIVATE_CONTENT.search(path.read_bytes()):
+            failures.append(str(relative))
+    if failures:
+        sys.exit("Private artifacts or connection details require review: " + ", ".join(failures))
+    print("Public-tree checks passed.")
+
+
+if __name__ == "__main__":
+    main()

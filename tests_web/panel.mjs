@@ -1,0 +1,315 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import { after, before, test } from "node:test";
+
+const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || "playwright");
+const directory = dirname(fileURLToPath(import.meta.url));
+let server;
+let browser;
+let base;
+
+const readyStatus = () => ({
+  version: "0.1.0",
+  state: "ready",
+  message: "The VPN, firewall, and DNS checks have passed.",
+  vpn: { state: "connected", provider: "Example VPN", public_ip: "192.0.2.42" },
+  downloader: { state: "running", url: "sabnzbd/", paused: false },
+  protection: { kill_switch: "verified", dns: "verified" },
+});
+
+const setupStatus = () => ({
+  version: "0.1.0",
+  state: "needs_configuration",
+  message: "Configure the VPN in the app settings to get started.",
+  vpn: { state: "disconnected", provider: "", public_ip: null },
+  downloader: { state: "stopped", url: "sabnzbd/", paused: true },
+  protection: { kill_switch: "unverified", dns: "unverified" },
+});
+
+before(async () => {
+  server = spawn(process.env.PYTHON || "python3", [resolve(directory, "fixture.py")], { stdio: ["ignore", "pipe", "inherit"] });
+  const lines = createInterface({ input: server.stdout });
+  const port = await Promise.race([
+    once(lines, "line").then(([line]) => Number(line)),
+    once(server, "exit").then(() => { throw new Error("Browser fixture exited before startup"); }),
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error("Browser fixture startup timed out")), 5000);
+      timer.unref();
+    }),
+  ]);
+  assert.ok(Number.isInteger(port) && port > 0);
+  base = `http://127.0.0.1:${port}/api/hassio_ingress/browser-test/`;
+  browser = await chromium.launch({
+    headless: true,
+    ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}),
+  });
+});
+
+after(async () => {
+  await browser?.close();
+  if (server && server.exitCode === null) {
+    server.kill("SIGTERM");
+    await once(server, "exit");
+  }
+});
+
+async function panel(t, initialStatus = readyStatus(), options = {}) {
+  const context = await browser.newContext(options);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.clock.install();
+  const fixture = { status: initialStatus, httpStatus: 200, requests: 0, handle: null, paths: [], errors: [] };
+  page.on("pageerror", (error) => fixture.errors.push(error.message));
+  page.on("request", (request) => fixture.paths.push(new URL(request.url()).pathname));
+  await page.route("**/api/v1/status", async (route) => {
+    fixture.requests++;
+    assert.equal(route.request().url(), `${base}api/v1/status`);
+    assert.equal(route.request().method(), "GET");
+    if (fixture.handle) return fixture.handle(route);
+    await route.fulfill({ status: fixture.httpStatus, json: fixture.status });
+  });
+  await page.goto(base);
+  return { page, fixture };
+}
+
+async function heading(page, title) {
+  await page.getByRole("heading", { name: title, exact: true }).waitFor({ state: "visible" });
+}
+
+async function refresh(page) {
+  const button = page.getByRole("button", { name: "Refresh status" });
+  await button.waitFor({ state: "visible" });
+  await button.click();
+}
+
+test("first run explains setup and keeps the downloader closed", async (t) => {
+  const { page, fixture } = await panel(t, setupStatus());
+  await heading(page, "Set up your VPN");
+  await heading(page, "A private connection comes first");
+  assert.match(await page.locator("#setup").innerText(), /Configuration/);
+  assert.match(await page.locator("#setup").innerText(), /Save, then restart/);
+  assert.equal(await page.locator("iframe").count(), 0);
+  assert.equal(await page.getByRole("link", { name: /Open downloads/ }).count(), 0);
+  assert.equal(await page.locator("#downloader-state").innerText(), "Stopped");
+  assert.match(await page.locator("footer").innerText(), /Other Home Assistant apps keep their network settings/);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("verified readiness opens the nested ingress queue and preserves a paused queue", async (t) => {
+  const status = readyStatus();
+  status.downloader.paused = true;
+  const { page, fixture } = await panel(t, status);
+  await heading(page, "Connected and protected");
+  await heading(page, "Download queue");
+  assert.equal(await page.locator("#paused-badge").innerText(), "Queue paused");
+  assert.equal(await page.getByRole("link", { name: /Open downloads/ }).getAttribute("href"), `${base}sabnzbd/`);
+  const queue = page.frameLocator("iframe[title='SABnzbd download queue']");
+  await queue.getByRole("heading", { name: "SABnzbd queue fixture" }).waitFor({ state: "visible" });
+  await queue.getByRole("searchbox", { name: "Search queue" }).fill("Keep this search");
+  const updated = page.waitForResponse((response) => response.url() === `${base}api/v1/status`);
+  await page.clock.runFor(5001);
+  await updated;
+  await page.getByRole("button", { name: "Refresh status" }).waitFor({ state: "visible" });
+  assert.equal(await queue.getByRole("searchbox", { name: "Search queue" }).inputValue(), "Keep this search");
+  assert.equal(fixture.paths.filter((path) => path.endsWith("/sabnzbd/")).length, 1);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("a running process never overrides a missing tunnel or protection proof", async (t) => {
+  const { page, fixture } = await panel(t);
+  await heading(page, "Connected and protected");
+  fixture.status = { ...readyStatus(), state: "degraded", message: "The VPN connection was interrupted.", vpn: { state: "disconnected", provider: "Example VPN", public_ip: null } };
+  await refresh(page);
+  await heading(page, "VPN connection interrupted");
+  assert.equal(await page.locator("iframe").count(), 0);
+  assert.equal(await page.locator("#public-ip").isVisible(), false);
+  assert.equal(await page.locator("#vpn-state").innerText(), "Disconnected");
+  assert.equal(await page.locator("#downloader-state").innerText(), "Running");
+  assert.equal(await page.locator("#connection-badge").innerText(), "Needs attention");
+
+  for (const check of ["kill_switch", "dns"]) {
+    fixture.status = readyStatus();
+    fixture.status.protection[check] = "unverified";
+    await refresh(page);
+    await heading(page, "Downloads unavailable");
+    assert.equal(await page.locator("iframe").count(), 0);
+    fixture.status.protection[check] = "failed";
+    await refresh(page);
+    await heading(page, "Protection check failed");
+    assert.equal(await page.locator("iframe").count(), 0);
+  }
+  fixture.status = readyStatus();
+  await refresh(page);
+  await heading(page, "Download queue");
+  assert.equal(await page.locator("iframe").count(), 1);
+});
+
+test("unknown queue state stays neutral instead of claiming the operator paused or resumed it", async (t) => {
+  const status = readyStatus();
+  status.downloader.paused = null;
+  const { page, fixture } = await panel(t, status);
+  await heading(page, "Connected and protected");
+  await heading(page, "Download queue");
+  assert.equal(await page.locator("#downloader-state").innerText(), "Running");
+  assert.equal(await page.locator("#downloader-detail").innerText(), "Queue managed in SABnzbd.");
+  assert.equal(await page.locator("#downloader-card").getAttribute("data-tone"), "neutral");
+  assert.equal(await page.locator("#paused-badge").isVisible(), false);
+  fixture.status.downloader.paused = true;
+  await refresh(page);
+  await page.getByText("Queue paused", { exact: true }).first().waitFor({ state: "visible" });
+  assert.equal(await page.locator("#paused-badge").isVisible(), true);
+  fixture.status.downloader.paused = null;
+  await refresh(page);
+  await page.getByText("Queue managed in SABnzbd.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("#paused-badge").isVisible(), false);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("HTTP failure revokes stale protection and automatic retry restores the queue", async (t) => {
+  const { page, fixture } = await panel(t);
+  await heading(page, "Connected and protected");
+  fixture.httpStatus = 503;
+  await refresh(page);
+  await heading(page, "Connection status unavailable");
+  assert.equal(await page.locator("iframe").count(), 0);
+  assert.equal(await page.locator("#firewall-state").innerText(), "Unavailable");
+  assert.equal(await page.locator("#vpn-state").innerText(), "Unavailable");
+  fixture.httpStatus = 200;
+  await page.clock.runFor(5001);
+  await heading(page, "Connected and protected");
+});
+
+test("unknown responses fail closed and text and upstream URLs cannot inject navigation", async (t) => {
+  const { page, fixture } = await panel(t);
+  await heading(page, "Connected and protected");
+  fixture.status = { ...readyStatus(), protection: { kill_switch: "unknown", dns: "verified" } };
+  await refresh(page);
+  await heading(page, "Connection status unavailable");
+  assert.equal(await page.locator("iframe").count(), 0);
+  fixture.status = readyStatus();
+  fixture.status.message = "<img src=x onerror=alert(1)>";
+  fixture.status.vpn.provider = "<script>bad()</script>";
+  fixture.status.downloader.url = "https://untrusted.example/";
+  await refresh(page);
+  await heading(page, "Connected and protected");
+  assert.equal(await page.locator("#connection-message").innerText(), fixture.status.message);
+  assert.equal(await page.locator("#vpn-detail").innerText(), fixture.status.vpn.provider);
+  assert.equal(await page.locator("#connection-message img, #vpn-detail script").count(), 0);
+  assert.equal(await page.locator("iframe").getAttribute("src"), `${base}sabnzbd/`);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("slow requests do not overlap, time out, and retry without late stale responses", async (t) => {
+  const { page, fixture } = await panel(t);
+  await heading(page, "Connected and protected");
+  let release;
+  let started;
+  const requested = new Promise((resolveRequest) => { started = resolveRequest; });
+  fixture.handle = async (route) => {
+    started();
+    await new Promise((resolveResponse) => { release = resolveResponse; });
+    await route.fulfill({ json: readyStatus() }).catch(() => {});
+  };
+  const before = fixture.requests;
+  await refresh(page);
+  await requested;
+  await page.clock.runFor(6000);
+  assert.equal(fixture.requests, before + 1);
+  assert.equal(await page.getByRole("button", { name: "Refresh status" }).isDisabled(), true);
+  await page.clock.runFor(2100);
+  await heading(page, "Connection status unavailable");
+  release();
+  fixture.handle = null;
+  fixture.status = setupStatus();
+  await page.clock.runFor(5001);
+  await heading(page, "Set up your VPN");
+  assert.equal(await page.locator("iframe").count(), 0);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("page lifecycle cancels polling and rechecks before restoring the existing queue", async (t) => {
+  const { page, fixture } = await panel(t);
+  await heading(page, "Connected and protected");
+  const queue = page.frameLocator("iframe");
+  await queue.getByRole("searchbox", { name: "Search queue" }).fill("Survives page restore");
+  // Browser lifecycle events exercise the shipped listeners, with no test globals.
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  const before = fixture.requests;
+  await page.clock.runFor(20000);
+  assert.equal(fixture.requests, before);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+  await heading(page, "Connected and protected");
+  assert.equal(await queue.getByRole("searchbox", { name: "Search queue" }).inputValue(), "Survives page restore");
+  assert.equal(fixture.requests, before + 1);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("starting and stopping remain understandable without exposing a queue", async (t) => {
+  const status = setupStatus();
+  status.state = "starting";
+  status.message = "";
+  status.vpn.state = "connecting";
+  const { page, fixture } = await panel(t, status);
+  await heading(page, "Connecting securely");
+  assert.equal(await page.locator("#vpn-state").innerText(), "Connecting");
+  fixture.status = { ...status, state: "stopping" };
+  await refresh(page);
+  await heading(page, "Downloads is stopping");
+  assert.equal(await page.locator("iframe").count(), 0);
+});
+
+test("mobile, dark mode, reduced motion, and keyboard controls remain usable", async (t) => {
+  const { page, fixture } = await panel(t, setupStatus(), { viewport: { width: 360, height: 800 }, colorScheme: "dark", reducedMotion: "reduce" });
+  await heading(page, "Set up your VPN");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
+  await page.keyboard.press("Tab");
+  assert.equal(await page.getByRole("button", { name: "Refresh status" }).evaluate((element) => element === document.activeElement), true);
+  const before = fixture.requests;
+  const updated = page.waitForResponse((response) => response.url() === `${base}api/v1/status`);
+  await page.keyboard.press("Enter");
+  await updated;
+  assert.equal(fixture.requests, before + 1);
+  await page.setViewportSize({ width: 320, height: 800 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
+  if (process.env.SCREENSHOT_DIR) {
+    await mkdir(process.env.SCREENSHOT_DIR, { recursive: true });
+    await page.screenshot({ path: resolve(process.env.SCREENSHOT_DIR, "downloads-setup-mobile-dark.png"), fullPage: true });
+    await page.setViewportSize({ width: 1200, height: 900 });
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.screenshot({ path: resolve(process.env.SCREENSHOT_DIR, "downloads-setup-desktop-light.png"), fullPage: true });
+    fixture.status = readyStatus();
+    await refresh(page);
+    await heading(page, "Connected and protected");
+    await page.frameLocator("iframe").getByRole("heading", { name: "SABnzbd queue fixture" }).waitFor({ state: "visible" });
+    await page.screenshot({ path: resolve(process.env.SCREENSHOT_DIR, "downloads-ready-desktop-light.png"), fullPage: true });
+  }
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("ingress follows Home Assistant theme changes independently of the system theme", async (t) => {
+  const { page } = await panel(t, setupStatus(), { colorScheme: "light" });
+  await page.goto(`${base}theme-host/`);
+  const ingress = page.frameLocator("iframe[title='Downloads ingress']");
+  await ingress.getByRole("heading", { name: "Set up your VPN" }).waitFor({ state: "visible" });
+  const root = ingress.locator("html");
+  assert.equal(await root.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(18, 27, 36)");
+  assert.equal(await root.evaluate((element) => getComputedStyle(element).colorScheme), "dark");
+  await page.evaluate(() => {
+    document.documentElement.style.colorScheme = "light";
+    document.documentElement.style.setProperty("--primary-background-color", "#f5f7fa");
+    document.documentElement.style.setProperty("--card-background-color", "#fff");
+    document.documentElement.style.setProperty("--primary-text-color", "#1b2a35");
+  });
+  await root.locator("body").waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const root = document.querySelector("iframe").contentDocument.documentElement;
+    return getComputedStyle(root).colorScheme === "light";
+  });
+  assert.equal(await root.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(245, 247, 250)");
+});

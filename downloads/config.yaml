@@ -1,0 +1,55 @@
+name: Downloads
+version: "0.1.0"
+slug: downloads
+description: SABnzbd behind a Gluetun VPN with a firewall kill switch
+url: https://github.com/jessfraz/ha-downloads
+arch: [amd64, aarch64]
+image: ghcr.io/jessfraz/ha-downloads
+startup: application
+boot: auto
+stage: experimental
+init: false
+timeout: 30
+backup: cold
+ingress: true
+ingress_port: 8099
+ingress_stream: true
+panel_admin: true
+panel_icon: mdi:download-network-outline
+privileged: [NET_ADMIN]
+devices:
+  - /dev/net/tun
+map:
+  - type: media
+    read_only: false
+ports:
+  8080/tcp: null
+  8888/tcp: null
+ports_description:
+  8080/tcp: Optional authenticated API; no host port by default
+  8888/tcp: Optional internal CONNECT proxy; no host port by default
+options:
+  vpn:
+    provider: ""
+    protocol: openvpn
+    username: ""
+    password: ""
+    wireguard_private_key: ""
+    wireguard_addresses: ""
+    countries: ""
+  network:
+    local_subnets: ["172.30.32.0/23"]
+  api_token: ""
+schema:
+  vpn:
+    provider: str
+    protocol: list(openvpn|wireguard)
+    username: str
+    password: password
+    wireguard_private_key: password
+    wireguard_addresses: str
+    countries: str
+  network:
+    local_subnets:
+      - str
+  api_token: password

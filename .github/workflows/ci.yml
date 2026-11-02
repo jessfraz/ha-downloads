@@ -1,0 +1,54 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
+      - run: nix develop --command just web
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all --benches --tests --examples --all-features -- -D warnings
+      - run: cargo test --locked --all-features
+      - name: Validate OpenAPI from the real binary
+        run: |
+          cargo run --locked -- openapi > "$RUNNER_TEMP/openapi.json"
+          python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["openapi"].startswith("3.") and "/api/v1/status" in v["paths"]' "$RUNNER_TEMP/openapi.json"
+  packaging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen --only-group dev
+      - run: uv run --frozen --only-group dev ruff check scripts/check-public-tree scripts/check-release-version
+      - run: uv run --frozen --only-group dev ruff format --check scripts/check-public-tree scripts/check-release-version
+      - run: uv run --frozen --only-group dev python scripts/check-public-tree
+      - run: uv run --frozen --only-group dev python scripts/check-release-version
+      - run: bash -n scripts/container-smoke.sh scripts/network-test.sh
+      - run: node --check web/app.js
