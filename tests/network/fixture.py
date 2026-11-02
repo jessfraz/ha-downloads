@@ -75,7 +75,12 @@ class DnsUdp(socketserver.BaseRequestHandler):
 class Origin(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         print(json.dumps({"http_peer": self.client_address[0], "path": self.path}), flush=True)
-        body = b'{"ip":"198.19.0.2","public_ip":"198.19.0.2"}'
+        # Empty blocklists are valid test data; public-IP lookup remains native and typed.
+        body = (
+            b'{"ip":"198.19.0.2","public_ip":"198.19.0.2"}'
+            if "ipinfo.io" in self.headers.get("Host", "")
+            else b""
+        )
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

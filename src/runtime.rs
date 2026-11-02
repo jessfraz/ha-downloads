@@ -6,6 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::Write,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -54,7 +55,6 @@ impl OwnedProcess {
             waited.context("Wait for service")?.map(|_| ())
         };
         self.group = None;
-        reap_adopted(group).await;
         term?;
         killed?;
         reaped.context("Reap service")
@@ -77,19 +77,74 @@ fn signal_group(group: i32, signal: i32) -> Result<()> {
     }
     Ok(())
 }
-async fn reap_adopted(group: i32) {
-    // When this service is container PID 1, grandchildren become its children after their parent exits.
-    // The direct Tokio child was already reaped, so this cannot steal its exit notification.
-    for _ in 0..100 {
-        let mut status = 0;
-        // SAFETY: waitpid writes only its supplied status and is limited to the owned process group.
-        let pid = unsafe { libc::waitpid(-group, &mut status, libc::WNOHANG) };
-        if pid < 0 {
-            break;
+/// The HA app runs without an init wrapper in a private process namespace.
+/// After the two direct services are reaped, PID 1 owns their orphaned descendants,
+/// including OpenVPN, which deliberately creates a different process group.
+async fn reap_container_children() -> Result<()> {
+    if !cfg!(target_os = "linux") || std::process::id() != 1 {
+        return Ok(());
+    }
+    let terminate_until = Instant::now() + Duration::from_secs(1);
+    let deadline = terminate_until + Duration::from_secs(2);
+    let mut terminated = BTreeSet::new();
+    let mut killed = BTreeSet::new();
+    loop {
+        let mut children = BTreeSet::new();
+        for task in fs::read_dir("/proc/self/task").context("Inspect owned container tasks")? {
+            let path = task?.path().join("children");
+            let listing = match fs::read_to_string(path) {
+                Ok(listing) => listing,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error).context("Inspect owned container children"),
+            };
+            for pid in listing.split_whitespace() {
+                let pid = pid.parse::<i32>().context("Invalid owned child PID")?;
+                ensure!(pid > 1, "Invalid owned child PID");
+                children.insert(pid);
+            }
         }
-        if pid == 0 {
-            sleep(Duration::from_millis(10)).await;
+        if children.is_empty() {
+            return Ok(());
         }
+        for pid in children {
+            let mut status = 0;
+            // SAFETY: the kernel's children list is scoped to this container PID 1.
+            // Both registered direct children were already waited, so their status cannot be stolen.
+            let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if result > 0 {
+                continue;
+            }
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    continue;
+                }
+                return Err(error).context("Reap owned container descendant");
+            }
+            let signal = if Instant::now() >= terminate_until {
+                if !killed.insert(pid) {
+                    continue;
+                }
+                libc::SIGKILL
+            } else {
+                if !terminated.insert(pid) {
+                    continue;
+                }
+                libc::SIGTERM
+            };
+            // SAFETY: an unreaped child PID remains allocated until this parent waits it.
+            if unsafe { libc::kill(pid, signal) } == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error).context("Stop owned container descendant");
+                }
+            }
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "Owned container descendants did not stop"
+        );
+        sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -108,7 +163,8 @@ impl Children {
             Some(child) => child.stop().await,
             None => Ok(()),
         };
-        sab.and(vpn)
+        let descendants = reap_container_children().await;
+        sab.and(vpn).and(descendants)
     }
     fn check_children(&mut self) -> Result<()> {
         if let Some(vpn) = self.vpn.as_mut()
@@ -310,6 +366,14 @@ pub async fn run(
         status.send_replace(Status::needs_configuration(&error.to_string()));
         return Ok(());
     }
+    if !cfg!(target_os = "linux") || std::process::id() != 1 {
+        status.send_replace(Status::degraded(
+            &config.vpn.provider,
+            "VPN services require the app's private Linux container. Downloads remain stopped.",
+            false,
+        ));
+        bail!("VPN services require the private Linux app container with init disabled");
+    }
     status.send_replace(Status::starting(&config.vpn.provider));
     let secrets = match Secrets::create(Path::new(PRIVATE_DIR), &config) {
         Ok(secrets) => secrets,
@@ -368,6 +432,25 @@ mod tests {
         symlink(&other, directory.join("sabnzbd.ini")).expect("link");
         assert!(crate::runtime::prepare_downloader(&directory).is_err());
         assert_eq!(std::fs::read(other).expect("read"), b"unchanged");
+    }
+    #[tokio::test]
+    async fn configured_native_start_is_rejected_before_services() {
+        assert_ne!(std::process::id(), 1, "Cargo runs this test as its child");
+        let config: Config = serde_json::from_str(
+            r#"{"vpn":{"provider":"test","username":"test","password":"test"}}"#,
+        )
+        .expect("valid configuration");
+        config.validate().expect("configured");
+        let (sender, receiver) = watch::channel(Status::starting("test"));
+        let (_shutdown, signal) = watch::channel(false);
+        let error = run(config, sender, signal)
+            .await
+            .expect_err("native VPN services refused");
+        assert_eq!(
+            error.to_string(),
+            "VPN services require the private Linux app container with init disabled"
+        );
+        assert_eq!(receiver.borrow().state, State::Degraded);
     }
     #[tokio::test]
     async fn missing_configuration_starts_nothing() {

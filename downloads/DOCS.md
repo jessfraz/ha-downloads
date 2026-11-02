@@ -19,7 +19,8 @@ validates this list and provides no arbitrary Gluetun environment overrides.
 ## SABnzbd and media managers
 
 Open Downloads through Home Assistant ingress, then use the SABnzbd interface
-to configure Usenet servers, credentials, categories, and queues. Provider
+to configure Usenet servers, credentials, categories, and queues. Enable TLS
+and certificate verification for each Usenet server. Provider
 traffic stays inside the app's VPN namespace. SABnzbd owns its own API key and
 login; Downloads does not import a provider or library automatically. The queue
 starts paused on each app start. Resume it in SABnzbd when ready.

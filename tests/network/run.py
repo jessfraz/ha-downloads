@@ -17,21 +17,32 @@ NONCE = secrets.token_hex(6)
 LABEL = "downloads-network-test=" + NONCE
 NETWORK = "downloads-test-" + NONCE
 TEST_IMAGE = "ha-downloads:network-" + NONCE
+BASE_TAG = "ha-downloads:network-base-" + NONCE
 CONTAINERS = []
 NETWORK_CREATED = False
 IMAGE_CREATED = False
+BASE_ID = ""
+BASE_TAG_CREATED = False
 WORK = ROOT / "work"
 WORK.mkdir(exist_ok=True)
 TEMP = Path(tempfile.mkdtemp(prefix="network-", dir=WORK))
 os.chmod(TEMP, 0o700)
+(TEMP / ".owner").write_text(NONCE)
+(TEMP / ".owner").chmod(0o600)
 
 
 def run(
     *args: str, check: bool = True, capture: bool = True, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args, check=check, capture_output=capture, text=True, timeout=300, cwd=cwd
+    result = subprocess.run(
+        args, check=False, capture_output=capture, text=True, timeout=300, cwd=cwd
     )
+    if check and result.returncode:
+        if capture:
+            print(result.stdout, file=sys.stderr)
+            print(result.stderr, file=sys.stderr)
+        result.check_returncode()
+    return result
 
 
 def docker(
@@ -74,15 +85,28 @@ def app_status(app: str) -> dict[str, object]:
     return json.loads(response.stdout) if response.returncode == 0 else {}
 
 
+def is_ready(app: str) -> bool:
+    state = app_status(app)
+    if state.get("state") == "degraded" and state.get("downloader", {}).get("state") == "stopped":
+        raise RuntimeError("Production runtime stopped its protected children: " + str(state))
+    return state.get("state") == "ready"
+
+
 def main() -> dict[str, object]:
-    global NETWORK_CREATED, IMAGE_CREATED
-    docker("image", "inspect", IMAGE)
+    global NETWORK_CREATED, IMAGE_CREATED, BASE_ID, BASE_TAG_CREATED
+    BASE_ID = docker("image", "inspect", IMAGE, "--format", "{{.Id}}").stdout.strip()
+    if docker("image", "inspect", BASE_TAG, check=False).returncode == 0:
+        raise RuntimeError("Refusing an existing fixture base tag")
+    docker("tag", BASE_ID, BASE_TAG)
+    BASE_TAG_CREATED = True
     for name in ("fixture.py", "probe.py", "Dockerfile"):
         shutil.copyfile(ROOT / "tests/network" / name, TEMP / name)
     # Only generated test PKI goes into a disposable, unpublished test image.
     san = (
         "subjectAltName=DNS:cloudflare-dns.com,DNS:cloudflare.com,DNS:github.com,"
-        "DNS:example.com,DNS:origin.test,DNS:api.ipify.org,IP:198.18.0.3"
+        "DNS:example.com,DNS:origin.test,DNS:api.ipify.org,DNS:ipinfo.io,"
+        "DNS:ifconfig.co,DNS:api.ip2location.io,DNS:www.cloudflare.com,"
+        "DNS:raw.githubusercontent.com,DNS:cdn.jsdelivr.net,IP:198.18.0.3"
     )
     run(
         "openssl",
@@ -135,7 +159,12 @@ def main() -> dict[str, object]:
             "/CN=" + role,
             cwd=TEMP,
         )
-        (TEMP / (role + ".ext")).write_text("extendedKeyUsage=" + role + "Auth\n")
+        (TEMP / (role + ".ext")).write_text(
+            "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\n"
+            + "extendedKeyUsage="
+            + role
+            + "Auth\n"
+        )
         run(
             "openssl",
             "x509",
@@ -159,7 +188,13 @@ def main() -> dict[str, object]:
         key.chmod(0o600)
     (TEMP / "key.pem").chmod(0o600)
     docker(
-        "build", "--build-arg", "APP_IMAGE=" + IMAGE, "--tag", TEST_IMAGE, str(TEMP), capture=False
+        "build",
+        "--build-arg",
+        "APP_IMAGE=" + BASE_TAG,
+        "--tag",
+        TEST_IMAGE,
+        str(TEMP),
+        capture=False,
     )
     IMAGE_CREATED = True
     docker(
@@ -167,7 +202,6 @@ def main() -> dict[str, object]:
         "create",
         "--label",
         LABEL,
-        "--internal",
         "--ipv6",
         "--subnet",
         "198.19.0.0/24",
@@ -182,6 +216,7 @@ dev tun
 topology subnet
 server 10.8.0.0 255.255.255.0
 push "redirect-gateway def1"
+push "route 198.18.0.3 255.255.255.255"
 ca /fixture/ca.crt
 cert /fixture/server.crt
 key /fixture/server.key
@@ -211,7 +246,16 @@ verb 3
     (data / "options.json").write_text(json.dumps(options))
     (data / "options.json").chmod(0o600)
     server_script = """set -eu
-ip addr add 198.18.0.3/32 dev lo
+ip addr add 198.18.0.3/32 dev eth0
+ip -6 addr add 2001:db8:1234::3/128 dev eth0
+iptables -P FORWARD DROP
+iptables -P OUTPUT DROP
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A OUTPUT -d 198.19.0.0/24 -j ACCEPT
+iptables -A OUTPUT -o tun0 -j ACCEPT
+iptables -t nat -A PREROUTING -i tun0 -p udp --dport 53 -j DNAT --to-destination 10.8.0.1:53
+iptables -t nat -A PREROUTING -i tun0 -p tcp --dport 53 -j DNAT --to-destination 10.8.0.1:53
 iptables -t nat -A PREROUTING -i tun0 -p tcp --dport 853 -j DNAT --to-destination 10.8.0.1:853
 iptables -t nat -A PREROUTING -i tun0 -p icmp -j DNAT --to-destination 10.8.0.1
 /opt/venv/bin/python /fixture/fixture.py &
@@ -265,7 +309,8 @@ exec sleep 600
         "/bin/sh",
         TEST_IMAGE,
         "-c",
-        "ip route replace default via 198.19.0.2; exec sleep 600",
+        "ip route replace default via 198.19.0.2; "
+        "ip -6 route replace default via fd12:3456:789a::3; exec sleep 600",
     )
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "control")
     app = start(
@@ -284,7 +329,8 @@ exec sleep 600
         "/bin/sh",
         TEST_IMAGE,
         "-c",
-        "ip route replace default via 198.19.0.2; exec /usr/local/bin/downloads serve",
+        "ip route replace default via 198.19.0.2; "
+        "ip -6 route replace default via fd12:3456:789a::3; exec /usr/local/bin/downloads serve",
     )
     wait(lambda: app_status(app).get("state") == "starting", "runtime waits for VPN")
     sab_pids = (
@@ -295,15 +341,17 @@ exec sleep 600
     assert json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout) == []
     execute(
         server,
-        "openvpn",
+        "/usr/sbin/openvpn2.6",
         "--config",
         "/fixture/server.conf",
         "--daemon",
+        "--log",
+        "/tmp/test-vpn.log",
         "--writepid",
         "/tmp/test-vpn.pid",
     )
     wait(
-        lambda: app_status(app).get("state") == "ready",
+        lambda: is_ready(app),
         "real runtime VPN/firewall/DNS and SAB readiness",
     )
     execute(
@@ -322,9 +370,11 @@ else:
     initial = app_status(app)
     assert initial["protection"] == {"kill_switch": "verified", "dns": "verified"}, initial
     up = json.loads(execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "up").stdout)
+    execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "proxy-up")
     # SAB owns the pause state. Do not test a lookalike process or bypass the real HTTP API.
-    sab_pause = """import configparser,json,urllib.parse,urllib.request
-c=configparser.ConfigParser();c.read('/data/sabnzbd/sabnzbd.ini');key=c['misc']['api_key']
+    sab_pause = """import json,urllib.parse,urllib.request
+from configobj import ConfigObj
+c=ConfigObj('/data/sabnzbd/sabnzbd.ini');key=c['misc']['api_key']
 base='http://127.0.0.1:8081/sabnzbd/api?'
 def call(mode):
  query=urllib.parse.urlencode({'apikey':key,'mode':mode,'output':'json'})
@@ -341,7 +391,7 @@ call('pause');assert call('queue')['queue']['paused'] is True
     assert dns_failure["state"] == "degraded", dns_failure
     assert dns_failure["downloader"]["state"] == "running", dns_failure
     execute(server, "rm", "/tmp/dns-fail")
-    wait(lambda: app_status(app).get("state") == "ready", "DNS answers recover")
+    wait(lambda: is_ready(app), "DNS answers recover")
     # A stopped upstream is a real tunnel outage. No namespace or production firewall is edited.
     execute(server, "/bin/sh", "-c", "kill -TERM $(cat /tmp/test-vpn.pid)")
     wait(
@@ -351,26 +401,64 @@ call('pause');assert call('queue')['queue']['paused'] is True
     )
     down = json.loads(execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "down").stdout)
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "control")
+    execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "proxy-down")
     execute(
         server,
-        "openvpn",
+        "/usr/sbin/openvpn2.6",
         "--config",
         "/fixture/server.conf",
         "--daemon",
+        "--log",
+        "/tmp/test-vpn.log",
         "--writepid",
         "/tmp/test-vpn.pid",
     )
-    wait(lambda: app_status(app).get("state") == "ready", "VPN reconnects without resuming queue")
+    wait(lambda: is_ready(app), "VPN reconnects without resuming queue")
     execute(app, "/opt/venv/bin/python", "-c", sab_pause.replace("call('pause');", ""))
     execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "up")
     # Abrupt loss of Gluetun must stop SAB; it cannot leave a downloader behind.
-    execute(app, "/bin/sh", "-c", "kill -KILL $(pidof gluetun-entrypoint)")
+    execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        """import os,pathlib,signal
+processes={}
+for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
+ try: arguments=path.read_bytes().split(bytes([0]))
+ except FileNotFoundError: continue
+ if arguments and arguments[0]:
+  processes.setdefault(pathlib.Path(os.fsdecode(arguments[0])).name,[]).append(int(path.parent.name))
+[glt]=processes['gluetun-entrypoint'];[vpn]=processes['openvpn2.6']
+assert os.getpgid(vpn)!=os.getpgid(glt)
+# A stopped child cannot handle TERM, so production cleanup must escalate and reap it.
+os.kill(vpn,signal.SIGSTOP);os.kill(glt,signal.SIGKILL)
+""",
+    )
     wait(
-        lambda: app_status(app).get("downloader", {}).get("state") == "stopped",
-        "child-exit cleanup",
+        lambda: (
+            app_status(app).get("state") == "degraded"
+            and app_status(app).get("downloader", {}).get("state") == "stopped"
+        ),
+        "completed child-exit cleanup",
     )
     assert json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout) == []
-    assert execute(app, "pidof", "openvpn", check=False).returncode != 0
+    children = json.loads(
+        execute(
+            app,
+            "/opt/venv/bin/python",
+            "-c",
+            """import json,pathlib
+children=[]
+for path in pathlib.Path('/proc').glob('[0-9]*/status'):
+ try: fields=dict(line.split(':',1) for line in path.read_text().splitlines() if ':' in line)
+ except FileNotFoundError: continue
+ if fields.get('PPid','').strip()=='1':
+  children.append({key:fields[key].strip() for key in ('Name','Pid','PPid','State')})
+print(json.dumps(children))
+""",
+        ).stdout
+    )
+    assert children == [], children
     evidence = []
     for line in docker("logs", server).stdout.splitlines():
         try:
@@ -382,15 +470,17 @@ call('pause');assert call('queue')['queue']['paused'] is True
     assert not any(row.get("http_peer") == "198.19.0.4" for row in evidence), evidence
     receipt = {
         "test_only": True,
-        "image_id": docker("image", "inspect", IMAGE, "--format", "{{.Id}}").stdout.strip(),
+        "image_id": BASE_ID,
         "dns_failure_reported_without_direct_fallback": True,
-        "local_vpn": "openvpn",
+        "local_vpn": "/usr/sbin/openvpn2.6",
         "up": up,
         "outage": down,
         "operator_pause_preserved": True,
         "child_exit_stopped_downloader": True,
+        "separate_group_stopped_openvpn_killed_and_reaped": True,
         "cold_start_gated": True,
         "dns_tls_and_origin_observed_through_tunnel": True,
+        "http_connect_proxy_up_and_failclosed": True,
         "unauthenticated_gluetun_controls_rejected": True,
         "outage_origin_still_reachable_by_unprotected_control": True,
     }
@@ -410,6 +500,36 @@ finally:
             (WORK / ("network-failure-" + NONCE + "-" + identifier[:12] + ".log")).write_text(
                 logs.stdout + logs.stderr
             )
+    for identifier in CONTAINERS:
+        docker("stop", "--time", "5", identifier, check=False)
+    # Linux bind mounts retain the container's UID. Remove only generated SAB data
+    # through a tracked, networkless helper before deleting its private host parent.
+    if IMAGE_CREATED and (TEMP / "data").exists():
+        helper = docker(
+            "create",
+            "--label",
+            LABEL,
+            "--network",
+            "none",
+            "-v",
+            f"{TEMP}:/fixture",
+            "--entrypoint",
+            "/opt/venv/bin/python",
+            TEST_IMAGE,
+            "-c",
+            "import pathlib,shutil,sys;root=pathlib.Path('/fixture');"
+            "assert (root/'.owner').read_text()==sys.argv[1];"
+            "shutil.rmtree(root/'data')",
+            NONCE,
+            check=False,
+        )
+        if helper.returncode == 0:
+            identifier = helper.stdout.strip()
+            CONTAINERS.append(identifier)
+            if docker("start", "--attach", identifier, check=False).returncode != 0:
+                errors.append("Generated app data cleanup failed")
+        else:
+            errors.append("Cannot create owned data cleanup helper")
     for identifier in reversed(CONTAINERS):
         docker("rm", "--force", identifier, check=False)
         if docker("container", "inspect", identifier, check=False).returncode == 0:
@@ -422,6 +542,10 @@ finally:
         docker("image", "rm", TEST_IMAGE, check=False)
         if docker("image", "inspect", TEST_IMAGE, check=False).returncode == 0:
             errors.append("Owned image remains: " + TEST_IMAGE)
+    if BASE_TAG_CREATED:
+        docker("image", "rm", BASE_TAG, check=False)
+        if docker("image", "inspect", BASE_TAG, check=False).returncode == 0:
+            errors.append("Owned base tag remains: " + BASE_TAG)
     try:
         shutil.rmtree(TEMP)
     except OSError as error:

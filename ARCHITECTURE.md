@@ -15,7 +15,9 @@ belong in this repository.
 
 1. Validate `/data/options.json` without logging secrets. Invalid or missing VPN
    credentials leave a useful setup/status page; the downloader stays stopped.
-2. Write private runtime secret files under `/run/downloads` and start Gluetun.
+2. Require the private Linux app container with this service as PID 1.
+   Configured native host execution is rejected before starting VPN services.
+   Write private runtime secret files under `/run/downloads` and start Gluetun.
    VPN and firewall cannot be disabled through the supported configuration.
 3. Require Gluetun's local health endpoint and DNS configuration to be ready
    before starting SABnzbd. Use Gluetun's resolver inside the namespace.
@@ -24,7 +26,10 @@ belong in this repository.
 5. A tunnel failure cannot create a direct WAN route: Gluetun's firewall remains
    authoritative. Runtime health displays the failure. Downloader lifecycle
    must not silently resume an operator-paused queue.
-6. Stop and reap owned children on termination. Unexpected child exit is a
+6. Stop and reap owned children and adopted descendants on termination.
+   OpenVPN starts its own process group; final cleanup uses the private
+   container PID 1 child list after both direct services have stopped.
+   Unexpected child exit is a
    visible failure, never permission to run without the VPN.
 
 ## Interfaces

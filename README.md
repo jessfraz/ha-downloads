@@ -13,7 +13,9 @@ is available under `/media`; private options and SABnzbd state live in `/data`.
 Add `https://github.com/jessfraz/ha-downloads` as a Home Assistant app repository,
 install **Downloads**, then configure the VPN in the app settings. Set the
 provider and protocol, plus the provider's service username and password for
-OpenVPN or its private key and addresses for WireGuard. Open the sidebar panel
+OpenVPN or its private key and addresses for WireGuard. Provider identifiers
+are listed in [Gluetun’s provider guide](https://github.com/qdm12/gluetun-wiki/tree/main/setup/providers).
+Open the sidebar panel
 to configure SABnzbd and resume the queue when ready.
 
 The app is experimental. Missing credentials leave the setup page available
