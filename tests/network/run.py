@@ -382,11 +382,14 @@ print(json.dumps({'initial_uid':initial_uid,'root_owned':True}))
         "ip -6 route replace default via fd12:3456:789a::3; exec /usr/local/bin/downloads serve",
     )
     wait(lambda: is_state(app, "starting"), "runtime waits for VPN")
-    sab_pids = (
-        "import pathlib;print([int(p.parent.name) for p in "
-        "pathlib.Path('/proc').glob('[0-9]*/cmdline') "
-        "if b'/opt/SABnzbd.py' in p.read_bytes().split(bytes([0]))])"
-    )
+    sab_pids = """import json,pathlib
+pids=[]
+for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
+ try: arguments=path.read_bytes().split(bytes([0]))
+ except (FileNotFoundError,ProcessLookupError): continue
+ if b'/opt/SABnzbd.py' in arguments:pids.append(int(path.parent.name))
+print(json.dumps(pids))
+"""
     assert json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout) == []
     execute(
         server,
@@ -484,13 +487,16 @@ os.kill(vpn,signal.SIGSTOP);os.kill(glt,signal.SIGKILL)
 """,
     )
     wait(
+        # Stopping already marks the downloader stopped. Read both fields from
+        # one snapshot so an intermediate transition cannot finish this wait.
         lambda: (
-            app_status(app).get("state") == "degraded"
-            and app_status(app).get("downloader", {}).get("state") == "stopped"
+            (snapshot := app_status(app)).get("state") == "degraded"
+            and snapshot.get("downloader", {}).get("state") == "stopped"
         ),
         "completed child-exit cleanup",
     )
-    assert json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout) == []
+    remaining_sab = json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout)
+    assert remaining_sab == [], {"sab_pids": remaining_sab, "status": app_status(app)}
     children = json.loads(
         execute(
             app,
