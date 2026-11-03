@@ -36,6 +36,7 @@ jobs:
         with:
           version: "0.13.5"
           python-version: "3.12"
+          enable-cache: false # Image dependencies are installed inside Docker.
       - name: Check release version
         if: startsWith(github.ref, 'refs/tags/v')
         env:
