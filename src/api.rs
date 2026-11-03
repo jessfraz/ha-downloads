@@ -393,8 +393,21 @@ async fn proxy(
             let location = value.to_str().map_err(|_| {
                 HttpError::for_internal_error("Invalid downloader redirect.".into())
             })?;
-            if location.starts_with("/sabnzbd") {
-                output = output.header(name, format!("{base}{location}"));
+            // CherryPy emits absolute redirects using its loopback upstream
+            // address. Keep those and root-relative native routes in ingress.
+            let target = if location.starts_with('/') {
+                r.context().upstream.join(location).ok()
+            } else {
+                reqwest::Url::parse(location).ok()
+            };
+            if let Some(target) = target
+                && target.origin() == r.context().upstream.origin()
+                && (target.path() == "/sabnzbd" || target.path().starts_with("/sabnzbd/"))
+            {
+                output = output.header(
+                    name,
+                    format!("{base}{}", &target[url::Position::BeforePath..]),
+                );
                 continue;
             }
         }
@@ -640,13 +653,16 @@ mod http_tests {
         head: String,
         body: Vec<u8>,
     }
-    async fn upstream(response: Vec<u8>) -> (reqwest::Url, tokio::task::JoinHandle<Captured>) {
+    async fn upstream(
+        response: impl FnOnce(&reqwest::Url) -> Vec<u8>,
+    ) -> (reqwest::Url, tokio::task::JoinHandle<Captured>) {
         let listener = TcpListener::bind(listener()).await.expect("upstream bind");
         let url = reqwest::Url::parse(&format!(
             "http://{}/",
             listener.local_addr().expect("address")
         ))
         .expect("url");
+        let response = response(&url);
         let task = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept");
             let mut bytes = Vec::new();
@@ -705,7 +721,7 @@ mod http_tests {
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             json.len()
         );
-        let (target, captured) = upstream([wire.as_bytes(), json].concat()).await;
+        let (target, captured) = upstream(|_| [wire.as_bytes(), json].concat()).await;
         let server = proxy_server(target).await;
         let response = admin(client().post(format!(
             "http://{}/sabnzbd/api?apikey=native-key&mode=set_config",
@@ -746,7 +762,7 @@ mod http_tests {
     }
     #[tokio::test]
     async fn proxy_rewrites_redirect_and_each_cookie_path() {
-        let (target,captured)=upstream(b"HTTP/1.1 303 See Other\r\nLocation: /sabnzbd/login/\r\nSet-Cookie: login=one; Path=/sabnzbd; HttpOnly\r\nSet-Cookie: csrf=two; Path=/sabnzbd/; SameSite=Strict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()).await;
+        let (target,captured)=upstream(|_| b"HTTP/1.1 303 See Other\r\nLocation: /sabnzbd/login/\r\nSet-Cookie: login=one; Path=/sabnzbd; HttpOnly\r\nSet-Cookie: csrf=two; Path=/sabnzbd/; SameSite=Strict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()).await;
         let server = proxy_server(target).await;
         let response = admin(client().get(format!("http://{}/sabnzbd/", server.local_addr())))
             .header("x-ingress-path", "/api/hassio_ingress/test")
@@ -772,6 +788,44 @@ mod http_tests {
         );
         captured.await.expect("capture");
         server.close().await.expect("close");
+    }
+    #[tokio::test]
+    async fn native_absolute_redirect_stays_inside_ingress() {
+        let (target,captured)=upstream(|url|format!("HTTP/1.1 303 See Other\r\nLocation: {url}sabnzbd/login/?next=%2Fsabnzbd%2F\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes()).await;
+        let server = proxy_server(target).await;
+        let response = admin(client().get(format!("http://{}/sabnzbd/", server.local_addr())))
+            .header("x-ingress-path", "/api/hassio_ingress/test")
+            .send()
+            .await
+            .expect("redirect");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers()["location"],
+            "/api/hassio_ingress/test/sabnzbd/login/?next=%2Fsabnzbd%2F"
+        );
+        captured.await.expect("capture");
+        server.close().await.expect("close");
+    }
+    #[tokio::test]
+    async fn unrelated_redirects_keep_their_destination() {
+        for location in [
+            "sabnzbd/login/",
+            "https://downloads.example/sabnzbd/login/",
+            "//downloads.example/sabnzbd/login/",
+            "/other/login/",
+        ] {
+            let (target,captured)=upstream(|_|format!("HTTP/1.1 303 See Other\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes()).await;
+            let server = proxy_server(target).await;
+            let response =
+                admin(client().get(format!("http://{}/sabnzbd/config/", server.local_addr())))
+                    .header("x-ingress-path", "/api/hassio_ingress/test")
+                    .send()
+                    .await
+                    .expect("redirect");
+            assert_eq!(response.headers()["location"], location);
+            captured.await.expect("capture");
+            server.close().await.expect("close");
+        }
     }
     #[tokio::test]
     async fn cross_origin_mutation_is_rejected_before_contacting_downloader() {
