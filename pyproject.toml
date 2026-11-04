@@ -35,7 +35,7 @@ dependencies = [
   "rebulk==6.0.1",
   "hachoir==3.4.0",
   "cryptography>=3.0",
-  "ujson==5.13.0",
+  "ujson==6.0.0",
   "orjson==3.13.0",
   "notify2==0.3.1; sys_platform == 'linux'",
   "requests==2.34.2",
