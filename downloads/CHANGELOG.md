@@ -1,3 +1,7 @@
+# 0.1.2
+
+Include the dependency updates merged before deployment.
+
 # 0.1.1
 
 Preserve trailing slashes in SABnzbd routes, including setup and login pages.
