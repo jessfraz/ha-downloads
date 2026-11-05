@@ -41,7 +41,7 @@
 
   const states = {
     app: ["needs_configuration", "starting", "ready", "degraded", "stopping"],
-    vpn: ["disconnected", "connecting", "connected"],
+    vpn: ["disconnected", "connecting", "connected", "unknown", "unhealthy"],
     downloader: ["stopped", "starting", "running"],
     protection: ["unverified", "verified", "failed"],
   };
@@ -93,6 +93,32 @@
     }
   }
 
+  function renderDiagnostics(status) {
+    const panel = byId("diagnostics-panel");
+    const monitoring = status.diagnostics;
+    panel.hidden = !monitoring?.checks;
+    if (panel.hidden) return;
+    const names = [["vpn_service", "VPN service"], ["vpn_health", "VPN health"], ["dns_service", "DNS service"], ["dns_lookup", "DNS lookup"], ["resolver", "Resolver configuration"], ["firewall", "Firewall"]];
+    const outcomes = { passed: "Passed", not_checked: "Not checked", stopped: "Stopped", timeout: "Request timed out", transport_error: "Request failed", http_error: "HTTP request rejected", invalid_response: "Invalid response", health_failed: "Health check failed", unsafe_resolver: "Resolver protection failed", dns_lookup_failed: "DNS lookup failed", firewall_failed: "Firewall check failed" };
+    const details = { not_ready: "not ready", icmp: "ICMP check", dns: "DNS check", tls: "TLS check", timeout: "timeout", connection: "connection check", connect: "connection failed", connection_refused: "connection refused", connection_reset: "connection reset", broken_pipe: "broken pipe", unexpected_eof: "connection closed", body: "response interrupted", other: "unspecified cause" };
+    const describe = (check) => {
+      if (!check || !Object.hasOwn(outcomes, check.outcome)) return "Unavailable";
+      const parts = [outcomes[check.outcome]];
+      if (Number.isInteger(check.http_status) && check.http_status >= 100 && check.http_status <= 599) parts.push(`HTTP ${check.http_status}`);
+      for (const code of [check.health_reason, check.transport_reason]) if (Object.hasOwn(details, code)) parts.push(details[code]);
+      if (Number.isFinite(check.elapsed_ms) && check.elapsed_ms >= 0) parts.push(`${Math.round(check.elapsed_ms)} ms`);
+      return parts.join(" · ");
+    };
+    const list = byId("diagnostic-checks");
+    list.replaceChildren(...names.map(([name, label]) => { const row = document.createElement("li"); row.textContent = `${label}: ${describe(monitoring.checks[name])}`; return row; }));
+    const incident = monitoring.last_incident;
+    const history = byId("diagnostic-history");
+    if (incident && Number.isFinite(incident.duration_ms)) {
+      const failures = names.filter(([name]) => incident.initial_checks?.[name]?.outcome !== "passed").map(([name, label]) => `${label}: ${describe(incident.initial_checks?.[name])}`).join("; ");
+      history.textContent = `${incident.recovered_at_unix_ms === null ? "Current failed-check period" : "Last failed-check period"}: ${(incident.duration_ms / 1000).toFixed(1)} seconds. ${failures}`;
+    } else history.textContent = "No failed-check period recorded since startup.";
+  }
+
   function showDownloads(paused) {
     byId("open-downloads").href = downloaderUrl;
     byId("paused-badge").hidden = paused !== true;
@@ -129,12 +155,15 @@
     byId("app-version").textContent = `v${status.version.slice(0, 40)}`;
     byId("app-version").hidden = false;
     byId("last-checked").textContent = `Updated ${new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date())}`;
+    renderDiagnostics(status);
 
-    const vpnLabels = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected" };
+    const vpnLabels = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected", unknown: "Status unavailable", unhealthy: "Health check failed" };
     setCheck("vpn", vpnLabels[status.vpn.state], vpnConnected
       ? status.vpn.provider.slice(0, 80) || "VPN connection established."
-      : status.vpn.state === "connecting" ? "Establishing a VPN connection." : "No VPN connection.",
-    vpnConnected ? "success" : status.vpn.state === "disconnected" && !setup ? "warning" : "neutral");
+      : status.vpn.state === "connecting" ? "Establishing a VPN connection."
+      : status.vpn.state === "unknown" ? "The connection could not be verified. Check the diagnostic details."
+      : status.vpn.state === "unhealthy" ? "The VPN service is running, but its health check failed." : "The VPN service is stopped.",
+    vpnConnected ? "success" : !setup ? "warning" : "neutral");
     const ip = byId("public-ip");
     ip.hidden = !vpnConnected || !status.vpn.public_ip;
     ip.textContent = ip.hidden ? "" : `Public IP: ${status.vpn.public_ip.slice(0, 128)}`;
@@ -168,7 +197,7 @@
       setBanner("Protection check failed", message || "The connection checks need attention before downloads can open.", "Needs attention", "failure");
       showHelp("Check the app logs", "Review the VPN settings and app logs in Home Assistant. The downloads interface stays closed until all connection checks pass.");
     } else if (status.state === "degraded" || status.state === "ready") {
-      setBanner(vpnConnected ? "Downloads unavailable" : "VPN connection interrupted",
+      setBanner(vpnConnected ? "Downloads unavailable" : status.vpn.state === "unknown" ? "VPN status unavailable" : status.vpn.state === "unhealthy" ? "VPN health check failed" : "VPN connection interrupted",
         message || "The connection is not ready. Downloads will open again once the checks pass.", "Needs attention", "warning");
       showHelp("Waiting for a secure connection", "The downloads interface stays closed until the VPN, firewall, and DNS checks pass. If this continues, check the app settings and logs in Home Assistant.");
     } else {

@@ -1,3 +1,10 @@
+# 0.1.3
+
+Distinguish a stopped VPN service from failed health checks and unavailable
+status requests. Show per-check results and the most recent failed-check period
+in Diagnostic details. Log timestamped check changes, recovery durations and
+fixed-message VPN diagnostics without forwarding raw upstream output.
+
 # 0.1.2
 
 Include the dependency updates merged before deployment.

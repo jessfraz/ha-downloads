@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use ha_downloads::{
     api::{self, Access},
     config::Config,
+    monitor::{LifecycleEvent, log_lifecycle},
     status::{State, Status},
 };
 use std::{
@@ -190,7 +191,7 @@ async fn serve(args: Serve) -> Result<ExitCode> {
                 .await
                 .is_err()
             {
-                eprintln!("Cannot update local diagnostic status.");
+                log_lifecycle(LifecycleEvent::StatusPersistenceFailed);
             }
             if status_rx.changed().await.is_err() {
                 break;
@@ -211,9 +212,9 @@ async fn serve(args: Serve) -> Result<ExitCode> {
             signal=shutdown_signal()=>signal?,
             result=task=>{
                 match result {
-                    Ok(Err(error))=>eprintln!("Protected service failed: {error}"),
+                    Ok(Err(_))=>log_lifecycle(LifecycleEvent::ProtectionServiceFailed),
                     Err(_)=>{
-                        eprintln!("The protection task stopped unexpectedly.");
+                        log_lifecycle(LifecycleEvent::ProtectionTaskStopped);
                         tx.send_replace(Status::degraded("","The protection service stopped. Restart the app.",false));
                     }
                     Ok(Ok(()))=>{}

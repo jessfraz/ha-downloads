@@ -1,3 +1,4 @@
+use crate::monitor::Monitoring;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,8 @@ pub enum VpnState {
     Disconnected,
     Connecting,
     Connected,
+    Unknown,
+    Unhealthy,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -60,6 +63,8 @@ pub struct Status {
     pub vpn: VpnStatus,
     pub downloader: DownloaderStatus,
     pub protection: ProtectionStatus,
+    #[serde(default)]
+    pub diagnostics: Monitoring,
 }
 impl Status {
     pub fn needs_configuration(message: &str) -> Self {
@@ -81,6 +86,7 @@ impl Status {
                 kill_switch: Verification::Unverified,
                 dns: Verification::Unverified,
             },
+            diagnostics: Monitoring::default(),
         }
     }
     pub fn starting(provider: &str) -> Self {
@@ -130,6 +136,7 @@ impl Status {
     pub fn degraded(provider: &str, message: &str, downloader_running: bool) -> Self {
         let mut value = Self::needs_configuration(message);
         value.state = State::Degraded;
+        value.vpn.state = VpnState::Unknown;
         value.vpn.provider = provider.into();
         value.downloader.state = if downloader_running {
             DownloaderState::Running
@@ -154,5 +161,10 @@ mod tests {
         assert_eq!(status.state, State::Degraded);
         assert_eq!(status.downloader.state, DownloaderState::Stopped);
         assert_eq!(status.protection.kill_switch, Verification::Failed);
+    }
+    #[test]
+    fn unavailable_health_is_not_a_confirmed_disconnection() {
+        let status = Status::degraded("test", "VPN health is unavailable.", true);
+        assert_ne!(status.vpn.state, crate::status::VpnState::Disconnected);
     }
 }

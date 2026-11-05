@@ -20,6 +20,10 @@ files. Do not log option values, raw upstream errors, credentials, API keys, or
 proxy URLs containing credentials. Cold backups contain secrets and need
 encryption and access controls. The app has no telemetry or credential uploads.
 
+Upstream diagnostics are allowlisted fixed messages, not redacted raw logs.
+Probe diagnostics contain only typed outcomes, timing, and HTTP status codes.
+Unknown response bodies and upstream strings never cross the logging boundary.
+
 Image builds pin upstream sources and digests. Native amd64 and arm64 tests,
 including local tunnel-outage/DNS/IPv6 fixtures, gate publication. Those tests
 do not replace live provider, ingress, NAS, and controlled-outage verification.

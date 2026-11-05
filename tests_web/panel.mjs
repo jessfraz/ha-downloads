@@ -150,6 +150,36 @@ test("a running process never overrides a missing tunnel or protection proof", a
   assert.equal(await page.locator("iframe").count(), 1);
 });
 
+test("failed health and unknown status stay distinct from a stopped VPN and preserve diagnostic history", async (t) => {
+  const status = readyStatus();
+  status.state = "degraded";
+  status.vpn.state = "unknown";
+  status.diagnostics = {
+    checks: { vpn_service: { outcome: "passed", http_status: 200, elapsed_ms: 1 }, vpn_health: { outcome: "timeout", elapsed_ms: 2000 } },
+    last_incident: { duration_ms: 3000, recovered_at_unix_ms: null, initial_checks: { vpn_health: { outcome: "timeout", elapsed_ms: 2000 } } },
+  };
+  const { page, fixture } = await panel(t, status);
+  await heading(page, "VPN status unavailable");
+  assert.equal(await page.locator("#vpn-state").innerText(), "Status unavailable");
+  await page.locator("#diagnostics-panel summary").click();
+  assert.match(await page.locator("#diagnostic-checks").innerText(), /VPN health: Request timed out.*2000 ms/);
+  assert.match(await page.locator("#diagnostic-history").innerText(), /Current failed-check period: 3.0 seconds/);
+  assert.equal(await page.locator("iframe").count(), 0);
+  fixture.status.vpn.state = "unhealthy";
+  await refresh(page);
+  await heading(page, "VPN health check failed");
+  assert.equal(await page.locator("#vpn-state").innerText(), "Health check failed");
+  const diagnostics = fixture.status.diagnostics;
+  diagnostics.last_incident.recovered_at_unix_ms = 10000;
+  fixture.status = { ...readyStatus(), diagnostics };
+  await refresh(page);
+  await heading(page, "Connected and protected");
+  assert.match(await page.locator("#diagnostic-history").innerText(), /Last failed-check period: 3.0 seconds/);
+  assert.match(await page.locator("#diagnostic-history").innerText(), /VPN health: Request timed out/);
+  assert.equal(await page.locator("iframe").count(), 1);
+  assert.deepEqual(fixture.errors, []);
+});
+
 test("unknown queue state stays neutral instead of claiming the operator paused or resumed it", async (t) => {
   const status = readyStatus();
   status.downloader.paused = null;

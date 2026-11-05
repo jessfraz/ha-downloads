@@ -1,5 +1,8 @@
 //! Gluetun is the only owner of tunnel, DNS and firewall configuration.
-use crate::config::{Config, VpnProtocol};
+use crate::{
+    config::{Config, VpnProtocol},
+    monitor::{Check, Checks, HealthReason, Outcome, TransportReason},
+};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::{
@@ -9,7 +12,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     process::Stdio,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -126,7 +129,7 @@ impl Secrets {
             ("HTTP_CONTROL_SERVER_ADDRESS", "127.0.0.1:8000"),
             ("HEALTH_SERVER_ADDRESS", "127.0.0.1:9999"),
             ("FIREWALL_INPUT_PORTS", "8080,8099,8888"),
-            ("LOG_LEVEL", "warn"),
+            ("LOG_LEVEL", "info"),
             // Gluetun3.41.3 dereferences these rates before applying its defaults.
             ("PPROF_ENABLED", "no"),
             ("PPROF_BLOCK_PROFILE_RATE", "0"),
@@ -164,11 +167,11 @@ impl Secrets {
         if config.vpn.provider == "custom" {
             command.env("OPENVPN_CUSTOM_CONFIG", CUSTOM_CONFIG);
         }
-        // Upstream diagnostics can include service credentials. Only sanitized lifecycle messages leave this process.
+        // The owner drains both pipes through the allowlisted diagnostic classifier.
         command
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         Ok(command)
     }
 }
@@ -194,20 +197,28 @@ fn effective_uid() -> u32 {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Protection {
-    pub(crate) firewall: bool,
-    pub(crate) dns: bool,
-    pub(crate) dns_safe: bool,
-    pub(crate) tunnel: bool,
+    pub(crate) checks: Checks,
 }
 impl Protection {
     pub(crate) fn ready(self) -> bool {
-        self.firewall && self.dns && self.tunnel
+        self.checks.ready()
+    }
+    pub(crate) fn firewall(self) -> bool {
+        self.checks.firewall.passed()
+    }
+    pub(crate) fn dns_safe(self) -> bool {
+        self.checks.resolver.passed()
+    }
+    pub(crate) fn dns(self) -> bool {
+        self.dns_safe() && self.checks.dns_service.passed() && self.checks.dns_lookup.passed()
     }
 }
 
 pub(crate) struct Probe {
     client: reqwest::Client,
     key: Zeroizing<String>,
+    control: reqwest::Url,
+    health: reqwest::Url,
 }
 #[derive(Deserialize)]
 struct ServiceState {
@@ -225,55 +236,106 @@ impl Probe {
                 .timeout(Duration::from_secs(2))
                 .build()?,
             key,
+            control: "http://127.0.0.1:8000/".parse()?,
+            health: "http://127.0.0.1:9999/".parse()?,
         })
     }
-    async fn running(&self, service: &str) -> bool {
+    async fn running(&self, service: &str) -> Check {
+        let started = Instant::now();
+        let Ok(url) = self.control.join(&format!("v1/{service}/status")) else {
+            return Check::measured(Outcome::InvalidResponse, started);
+        };
         let result = self
             .client
-            .get(format!("http://127.0.0.1:8000/v1/{service}/status"))
+            .get(url)
             .header("X-API-Key", self.key.as_str())
             .send()
             .await;
-        match result {
-            Ok(response) if response.status().is_success() => response
-                .json::<ServiceState>()
-                .await
-                .is_ok_and(|s| s.status == "running"),
-            _ => false,
-        }
+        let response = match result {
+            Ok(r) => r,
+            Err(e) => return request_failure(&e, started),
+        };
+        let status = response.status();
+        let mut check = if status.is_success() {
+            match response.json::<ServiceState>().await {
+                Ok(state) => Check::measured(
+                    match state.status.as_str() {
+                        "running" => Outcome::Passed,
+                        "stopped" => Outcome::Stopped,
+                        _ => Outcome::InvalidResponse,
+                    },
+                    started,
+                ),
+                Err(error) if error.is_timeout() => request_failure(&error, started),
+                Err(_) => Check::measured(Outcome::InvalidResponse, started),
+            }
+        } else {
+            Check::measured(Outcome::HttpError, started)
+        };
+        check.http_status = Some(status.as_u16());
+        check
     }
     pub(crate) async fn check(&self) -> Protection {
-        let (firewall, dns_safe, tunnel) = tokio::join!(
-            firewall_verified(),
-            self.dns_configuration_safe(),
-            self.tunnel_healthy()
+        let (firewall, resolver, vpn_service, vpn_health, dns_service, dns_lookup) = tokio::join!(
+            firewall_check(),
+            resolver_check(),
+            self.running("vpn"),
+            self.health_check(),
+            self.running("dns"),
+            lookup_check()
         );
-        let dns = dns_safe && self.running("dns").await && dns_roundtrip().await.is_ok();
         Protection {
-            firewall,
-            dns,
-            dns_safe,
-            tunnel,
+            checks: Checks {
+                firewall,
+                resolver,
+                vpn_service,
+                vpn_health,
+                dns_service,
+                dns_lookup,
+            },
         }
     }
-    async fn dns_configuration_safe(&self) -> bool {
-        let Ok(resolv) = tokio::fs::read_to_string("/etc/resolv.conf").await else {
-            return false;
+    async fn health_check(&self) -> Check {
+        let started = Instant::now();
+        let response = match self.client.get(self.health.clone()).send().await {
+            Ok(r) => r,
+            Err(e) => return request_failure(&e, started),
         };
-        loopback_resolver(&resolv)
-    }
-    async fn tunnel_healthy(&self) -> bool {
-        self.running("vpn").await
-            && self
-                .client
-                .get("http://127.0.0.1:9999/")
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success())
+        let status = response.status();
+        let mut check = Check::measured(
+            if status.is_success() {
+                Outcome::Passed
+            } else {
+                Outcome::HttpError
+            },
+            started,
+        );
+        check.http_status = Some(status.as_u16());
+        if status == reqwest::StatusCode::INTERNAL_SERVER_ERROR {
+            let mut response = response;
+            let mut bytes = Vec::new();
+            while bytes.len() < 4096 {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => {
+                        bytes.extend_from_slice(&chunk[..chunk.len().min(4096 - bytes.len())])
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        let mut failed = request_failure(&e, started);
+                        failed.http_status = Some(status.as_u16());
+                        return failed;
+                    }
+                }
+            }
+            check.outcome = Outcome::HealthFailed;
+            check.health_reason = Some(health_reason(&bytes));
+        }
+        check.elapsed_ms = Check::measured(check.outcome, started).elapsed_ms;
+        check
     }
     pub(crate) async fn public_ip(&self) -> Option<String> {
         self.client
-            .get("http://127.0.0.1:8000/v1/publicip/ip")
+            .get(self.control.join("v1/publicip/ip").ok()?)
             .header("X-API-Key", self.key.as_str())
             .send()
             .await
@@ -285,6 +347,96 @@ impl Probe {
             .ok()
             .map(|p| p.public_ip.to_string())
     }
+}
+fn request_failure(error: &reqwest::Error, started: Instant) -> Check {
+    use std::error::Error;
+    let mut check = Check::measured(
+        if error.is_timeout() {
+            Outcome::Timeout
+        } else {
+            Outcome::TransportError
+        },
+        started,
+    );
+    let mut reason = if error.is_connect() {
+        TransportReason::Connect
+    } else if error.is_body() {
+        TransportReason::Body
+    } else {
+        TransportReason::Other
+    };
+    let mut source = error.source();
+    while let Some(error) = source {
+        if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            reason = match io.kind() {
+                std::io::ErrorKind::ConnectionRefused => TransportReason::ConnectionRefused,
+                std::io::ErrorKind::ConnectionReset => TransportReason::ConnectionReset,
+                std::io::ErrorKind::BrokenPipe => TransportReason::BrokenPipe,
+                std::io::ErrorKind::UnexpectedEof => TransportReason::UnexpectedEof,
+                _ => reason,
+            };
+        }
+        source = error.source();
+    }
+    check.transport_reason = Some(reason);
+    check
+}
+fn health_reason(body: &[u8]) -> HealthReason {
+    let body = String::from_utf8_lossy(body).to_ascii_lowercase();
+    if body.contains("not run yet") {
+        HealthReason::NotReady
+    } else if body.contains("icmp") || body.contains("ping") {
+        HealthReason::Icmp
+    } else if body.contains("dns") || body.contains("lookup") {
+        HealthReason::Dns
+    } else if body.contains("tls") || body.contains("certificate") {
+        HealthReason::Tls
+    } else if body.contains("timeout") || body.contains("timed out") {
+        HealthReason::Timeout
+    } else if body.contains("connect") || body.contains("dial") {
+        HealthReason::Connection
+    } else {
+        HealthReason::Other
+    }
+}
+async fn resolver_check() -> Check {
+    let started = Instant::now();
+    let safe = tokio::fs::read_to_string("/etc/resolv.conf")
+        .await
+        .is_ok_and(|s| loopback_resolver(&s));
+    Check::measured(
+        if safe {
+            Outcome::Passed
+        } else {
+            Outcome::UnsafeResolver
+        },
+        started,
+    )
+}
+async fn lookup_check() -> Check {
+    let started = Instant::now();
+    let result = dns_roundtrip().await;
+    Check::measured(
+        if result.is_ok() {
+            Outcome::Passed
+        } else if started.elapsed() >= Duration::from_secs(2) {
+            Outcome::Timeout
+        } else {
+            Outcome::DnsLookupFailed
+        },
+        started,
+    )
+}
+async fn firewall_check() -> Check {
+    let started = Instant::now();
+    Check::measured(
+        if firewall_verified().await {
+            Outcome::Passed
+        } else {
+            Outcome::FirewallFailed
+        },
+        started,
+    )
 }
 fn loopback_resolver(contents: &str) -> bool {
     let mut found = false;
@@ -336,8 +488,107 @@ async fn default_deny(program: &str) -> bool {
 mod tests {
     use crate::{
         config::Config,
-        vpn::{Secrets, loopback_resolver},
+        monitor::{HealthReason, Outcome},
+        vpn::{Probe, Secrets, loopback_resolver},
     };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    async fn endpoint(
+        status: u16,
+        body: &str,
+        delay: std::time::Duration,
+    ) -> (reqwest::Url, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let response = format!(
+            "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).await.expect("request");
+            tokio::time::sleep(delay).await;
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+        (format!("http://{address}/").parse().expect("URL"), task)
+    }
+    #[tokio::test]
+    async fn actual_service_responses_preserve_failure_categories_without_body_values() {
+        for (status, body, expected) in [
+            (200, r#"{"status":"running"}"#, Outcome::Passed),
+            (200, r#"{"status":"stopped"}"#, Outcome::Stopped),
+            (503, "credential-fixture-not-for-logs", Outcome::HttpError),
+            (
+                200,
+                r#"{"status":"credential-fixture-not-for-logs"}"#,
+                Outcome::InvalidResponse,
+            ),
+        ] {
+            let (url, task) = endpoint(status, body, std::time::Duration::ZERO).await;
+            let mut probe = Probe::new(zeroize::Zeroizing::new("fixture".into())).expect("probe");
+            probe.control = url;
+            let check = probe.running("vpn").await;
+            task.await.expect("server");
+            assert_eq!(check.outcome, expected);
+            assert_eq!(check.http_status, Some(status));
+            assert!(
+                !serde_json::to_string(&check)
+                    .expect("json")
+                    .contains("credential-fixture")
+            );
+        }
+    }
+    #[tokio::test]
+    async fn real_health_http_errors_are_not_service_stops() {
+        for (status, body, expected, reason) in [
+            (
+                500,
+                "healthcheck did not run yet: token=credential-fixture",
+                Outcome::HealthFailed,
+                Some(HealthReason::NotReady),
+            ),
+            (
+                500,
+                "TLS certificate failed: https://user:credential-fixture@example.invalid",
+                Outcome::HealthFailed,
+                Some(HealthReason::Tls),
+            ),
+            (503, "credential-fixture", Outcome::HttpError, None),
+        ] {
+            let (url, task) = endpoint(status, body, std::time::Duration::ZERO).await;
+            let mut probe = Probe::new(zeroize::Zeroizing::new("fixture".into())).expect("probe");
+            probe.health = url;
+            let check = probe.health_check().await;
+            task.await.expect("server");
+            assert_eq!(check.outcome, expected);
+            assert_eq!(check.health_reason, reason);
+            assert_eq!(check.http_status, Some(status));
+            assert!(
+                !serde_json::to_string(&check)
+                    .expect("json")
+                    .contains("credential-fixture")
+            );
+        }
+    }
+    #[tokio::test]
+    async fn a_real_request_timeout_is_observable_without_request_details() {
+        let (url, task) = endpoint(200, "", std::time::Duration::from_millis(150)).await;
+        let mut probe = Probe::new(zeroize::Zeroizing::new("fixture".into())).expect("probe");
+        probe.health = url;
+        probe.client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(30))
+            .build()
+            .expect("client");
+        let check = probe.health_check().await;
+        task.await.expect("server");
+        assert_eq!(check.outcome, Outcome::Timeout);
+        assert!(check.elapsed_ms >= 20);
+        assert_eq!(check.http_status, None);
+    }
     use std::{
         fs,
         os::unix::fs::{MetadataExt, PermissionsExt, symlink},

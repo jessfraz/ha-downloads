@@ -25,6 +25,19 @@ failure behavior before relying on a deployment.
 See [app documentation](downloads/DOCS.md) for options, storage, and connecting
 media managers. No indexer, Usenet account, or VPN subscription is included.
 
+## Diagnostics
+
+Open **Diagnostic details** in the panel for individual check results and the
+most recent failed-check period, including after recovery. A stopped VPN
+service, a failed upstream health check, and an unavailable status request are
+reported separately.
+
+Home Assistant's app **Logs** tab records timestamped check changes, recovery
+durations, and allowlisted VPN lifecycle events and warnings. Raw upstream
+output is never forwarded: proxy logs can contain credentials unknown to this
+app. See [diagnostic behavior](downloads/DOCS.md#diagnostics) for retention and
+failure details.
+
 ## Develop
 
 ```sh

@@ -57,3 +57,25 @@ Before relying on a deployment, confirm the chosen provider's tunnel and public
 IP, DNS behavior, TLS server access, app-to-app requests, and media permissions.
 Cut the tunnel in a controlled test and verify downloads and proxied external
 requests fail while unrelated Home Assistant services remain reachable.
+
+## Diagnostics
+
+Expand **Diagnostic details** in the panel to inspect the VPN service, upstream
+health check, DNS service, DNS lookup, resolver configuration, and firewall.
+Results include elapsed time, HTTP status where applicable, and a fixed error
+category. A health endpoint failure does not establish that the tunnel stopped.
+Downloads remain gated on all required checks; the firewall remains authoritative.
+
+The panel and authenticated status API retain the most recent failed-check
+period and its duration after recovery. Counters and this in-memory history
+reset on app restart. Home Assistant's journal retains timestamped transition
+and recovery events according to its own log retention, including earlier app
+runs. View them in this app's **Logs** tab.
+
+VPN initialization, reconnection, and known upstream warnings/errors become
+fixed-message events. Unknown warnings use a generic code; unknown informational
+messages are discarded. Raw upstream lines, URLs, settings, and response bodies
+are never logged. Repeated upstream events are rate limited, and a failed or slow
+log sink cannot block the VPN process.
+The journal sink uses the Linux stderr pipe provided by Home Assistant/Docker;
+non-pipe or unavailable outputs disable logging rather than risk blocking.

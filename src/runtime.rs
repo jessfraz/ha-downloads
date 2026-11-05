@@ -1,6 +1,7 @@
 //! Own both process groups. SAB stops before Gluetun can remove its protections.
 use crate::{
     config::Config,
+    monitor::{LifecycleEvent, Outcome, Tracker, log_lifecycle},
     status::{DownloaderState, Status, Verification, VpnState},
     vpn::{PRIVATE_DIR, Probe, Protection, Secrets},
 };
@@ -9,7 +10,10 @@ use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::Write,
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    os::unix::{
+        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+        process::ExitStatusExt,
+    },
     path::Path,
     process::{ExitStatus, Stdio},
     time::Duration,
@@ -23,20 +27,56 @@ use tokio::{
 struct OwnedProcess {
     child: Child,
     group: Option<i32>,
+    log_stop: watch::Sender<bool>,
+    log_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 impl OwnedProcess {
     fn spawn(mut command: Command) -> Result<Self> {
         command.process_group(0);
         command.kill_on_drop(true);
-        let child = command.spawn().context("Start protected service")?;
+        let mut child = command.spawn().context("Start protected service")?;
         let group = child
             .id()
             .and_then(|pid| i32::try_from(pid).ok())
             .context("Service PID is unavailable")?;
+        let (log_stop, log_rx) = watch::channel(false);
+        let mut log_tasks = Vec::new();
+        if let Some(reader) = child.stdout.take() {
+            let cancel = log_rx.clone();
+            log_tasks.push(tokio::spawn(async move {
+                let _ = crate::diagnostics::consume(
+                    reader,
+                    crate::diagnostics::NonblockingStderr::open(),
+                    cancel,
+                )
+                .await;
+            }));
+        }
+        if let Some(reader) = child.stderr.take() {
+            log_tasks.push(tokio::spawn(async move {
+                let _ = crate::diagnostics::consume(
+                    reader,
+                    crate::diagnostics::NonblockingStderr::open(),
+                    log_rx,
+                )
+                .await;
+            }));
+        }
         Ok(Self {
             child,
             group: Some(group),
+            log_stop,
+            log_tasks,
         })
+    }
+    async fn finish_logs(&mut self) {
+        for mut task in self.log_tasks.drain(..) {
+            if timeout(Duration::from_secs(1), &mut task).await.is_err() {
+                let _ = self.log_stop.send(true);
+                task.abort();
+                let _ = task.await;
+            }
+        }
     }
     fn exited(&mut self) -> Result<Option<ExitStatus>> {
         self.child.try_wait().context("Read service exit status")
@@ -62,6 +102,10 @@ impl OwnedProcess {
 }
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
+        let _ = self.log_stop.send(true);
+        for task in &self.log_tasks {
+            task.abort();
+        }
         if let Some(group) = self.group.take() {
             let _ = signal_group(group, libc::SIGKILL);
         }
@@ -164,17 +208,31 @@ impl Children {
             None => Ok(()),
         };
         let descendants = reap_container_children().await;
+        if let Some(child) = self.downloader.as_mut() {
+            child.finish_logs().await;
+        }
+        if let Some(child) = self.vpn.as_mut() {
+            child.finish_logs().await;
+        }
         sab.and(vpn).and(descendants)
     }
     fn check_children(&mut self) -> Result<()> {
         if let Some(vpn) = self.vpn.as_mut()
-            && vpn.exited()?.is_some()
+            && let Some(exit) = vpn.exited()?
         {
+            log_lifecycle(LifecycleEvent::VpnProcessExited {
+                exit_code: exit.code(),
+                signal: exit.signal(),
+            });
             bail!("VPN service exited. Downloads have been stopped.")
         }
         if let Some(sab) = self.downloader.as_mut()
-            && sab.exited()?.is_some()
+            && let Some(exit) = sab.exited()?
         {
+            log_lifecycle(LifecycleEvent::DownloaderProcessExited {
+                exit_code: exit.code(),
+                signal: exit.signal(),
+            });
             bail!("Downloader exited unexpectedly.")
         }
         Ok(())
@@ -191,10 +249,13 @@ impl Children {
         }
         self.vpn = Some(OwnedProcess::spawn(secrets.command(config)?)?);
         let probe = Probe::new(secrets.api_key.clone())?;
+        let mut tracker = Tracker::new();
         let deadline = Instant::now() + Duration::from_secs(180);
         loop {
             self.check_children()?;
             let protection = tokio::select! { changed = shutdown.changed() => { let _ = changed; return Ok(()) }, check = probe.check() => check };
+            let diagnostics = tracker.observe(protection.checks);
+            status.send_modify(|value| value.diagnostics = diagnostics);
             if protection.ready() {
                 break;
             }
@@ -242,7 +303,9 @@ impl Children {
         loop {
             self.check_children()?;
             let protection = tokio::select! { _ = shutdown.changed() => return Ok(()), value = probe.check() => value };
-            if !protection.firewall || !protection.dns_safe {
+            let diagnostics = tracker.observe(protection.checks);
+            status.send_modify(|value| value.diagnostics = diagnostics);
+            if !protection.firewall() || !protection.dns_safe() {
                 bail!("Protection checks failed. Downloads have been stopped.")
             }
             if client
@@ -261,7 +324,9 @@ impl Children {
         loop {
             self.check_children()?;
             let protection = tokio::select! { _ = shutdown.changed() => return Ok(()), value = probe.check() => value };
-            if !protection.firewall || !protection.dns_safe {
+            let diagnostics = tracker.observe(protection.checks);
+            status.send_modify(|value| value.diagnostics = diagnostics);
+            if !protection.firewall() || !protection.dns_safe() {
                 bail!("Protection checks failed. Downloads have been stopped.")
             }
             publish(status, &config.vpn.provider, protection, &probe).await;
@@ -325,30 +390,39 @@ async fn publish(
         Status::ready(
             provider,
             probe.public_ip().await,
-            protection.firewall,
-            protection.dns,
+            protection.firewall(),
+            protection.dns(),
         )
-    } else if protection.tunnel {
-        let mut value = Status::degraded(
-            provider,
-            "DNS answers are unavailable. Downloads retain the protected resolver and firewall.",
-            true,
-        );
-        value.vpn.state = VpnState::Connected;
-        value
     } else {
-        Status::degraded(
-            provider,
-            "VPN connection interrupted. The firewall blocks direct downloads.",
-            true,
-        )
+        let (state, message) = match protection.checks.vpn_service.outcome {
+            Outcome::Stopped => (
+                VpnState::Disconnected,
+                "The VPN service is stopped. The firewall blocks direct downloads.",
+            ),
+            Outcome::Passed if protection.checks.vpn_health.outcome == Outcome::HealthFailed => (
+                VpnState::Unhealthy,
+                "The VPN service is running, but its health check failed. Check the app logs for the cause.",
+            ),
+            Outcome::Passed if protection.checks.vpn_health.passed() => (
+                VpnState::Connected,
+                "DNS answers are unavailable. Downloads retain the protected resolver and firewall.",
+            ),
+            _ => (
+                VpnState::Unknown,
+                "VPN status could not be verified. A failed status check does not confirm a disconnected tunnel.",
+            ),
+        };
+        let mut value = Status::degraded(provider, message, true);
+        value.vpn.state = state;
+        value
     };
-    status.protection.kill_switch = if protection.firewall {
+    status.diagnostics = sender.borrow().diagnostics.clone();
+    status.protection.kill_switch = if protection.firewall() {
         Verification::Verified
     } else {
         Verification::Failed
     };
-    status.protection.dns = if protection.dns {
+    status.protection.dns = if protection.dns() {
         Verification::Verified
     } else {
         Verification::Failed
@@ -390,11 +464,23 @@ pub async fn run(
     let result = children
         .supervise(&config, &secrets, &status, &mut shutdown)
         .await;
-    status.send_replace(Status::stopping(&config.vpn.provider));
+    let diagnostics = status.borrow().diagnostics.clone();
+    let mut stopping = Status::stopping(&config.vpn.provider);
+    stopping.diagnostics = diagnostics.clone();
+    status.send_replace(stopping);
     let cleanup = children.stop().await;
     drop(secrets);
     if result.is_err() || cleanup.is_err() {
-        status.send_replace(Status::degraded(&config.vpn.provider, "A protected service failed. Downloads are stopped; check the app configuration and restart.", false));
+        let mut failed = Status::degraded(
+            &config.vpn.provider,
+            "A protected service failed. Downloads are stopped; check the app logs and restart.",
+            false,
+        );
+        failed.diagnostics = diagnostics;
+        if cleanup.is_ok() {
+            failed.vpn.state = VpnState::Disconnected;
+        }
+        status.send_replace(failed);
     }
     result.and(cleanup)
 }
@@ -403,11 +489,56 @@ pub async fn run(
 mod tests {
     use crate::{
         config::Config,
+        monitor::{Check, Checks, Outcome},
         runtime::{OwnedProcess, run},
-        status::{State, Status},
+        status::{State, Status, VpnState},
+        vpn::{Probe, Protection},
     };
     use std::time::Duration;
     use tokio::{process::Command, sync::watch};
+    #[tokio::test]
+    async fn status_distinguishes_stopped_service_failed_health_and_unavailable_checks() {
+        let passed = Check {
+            outcome: Outcome::Passed,
+            ..Check::default()
+        };
+        let mut checks = Checks {
+            vpn_service: passed,
+            vpn_health: passed,
+            dns_service: passed,
+            dns_lookup: Check {
+                outcome: Outcome::DnsLookupFailed,
+                ..Check::default()
+            },
+            resolver: passed,
+            firewall: passed,
+        };
+        let probe = Probe::new(zeroize::Zeroizing::new("fixture-key".into())).expect("probe");
+        let (tx, rx) = watch::channel(Status::starting("test"));
+        for (service, health, expected) in [
+            (
+                Outcome::Stopped,
+                Outcome::HealthFailed,
+                VpnState::Disconnected,
+            ),
+            (Outcome::Passed, Outcome::HealthFailed, VpnState::Unhealthy),
+            (Outcome::Timeout, Outcome::Passed, VpnState::Unknown),
+            (Outcome::HttpError, Outcome::Passed, VpnState::Unknown),
+            (Outcome::Passed, Outcome::Timeout, VpnState::Unknown),
+            (Outcome::Passed, Outcome::Passed, VpnState::Connected),
+        ] {
+            checks.vpn_service.outcome = service;
+            checks.vpn_health.outcome = health;
+            crate::runtime::publish(&tx, "test", Protection { checks }, &probe).await;
+            let actual = rx.borrow().clone();
+            assert_eq!(actual.vpn.state, expected);
+            assert_eq!(actual.state, State::Degraded);
+            assert_eq!(
+                actual.downloader.state,
+                crate::status::DownloaderState::Running
+            );
+        }
+    }
     #[test]
     fn bootstrap_preserves_existing_private_sab_configuration() {
         let root = tempfile::tempdir().expect("temp");
