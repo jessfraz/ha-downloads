@@ -1,5 +1,5 @@
 name: Downloads
-version: "0.1.0"
+version: "0.1.1"
 slug: downloads
 description: SABnzbd behind a Gluetun VPN with a firewall kill switch
 url: https://github.com/jessfraz/ha-downloads
@@ -16,7 +16,7 @@ ingress_port: 8099
 ingress_stream: true
 panel_admin: true
 panel_icon: mdi:download-network-outline
-privileged: [NET_ADMIN]
+privileged: [NET_ADMIN, NET_RAW]
 devices:
   - /dev/net/tun
 map:

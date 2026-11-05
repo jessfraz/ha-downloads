@@ -1,7 +1,7 @@
 # Security boundaries
 
 Downloads runs Gluetun and SABnzbd in one private container network namespace.
-Only NET_ADMIN and `/dev/net/tun` are requested. The app does not use host
+NET_ADMIN, NET_RAW and `/dev/net/tun` are requested. The app does not use host
 networking/PID/IPC, the Docker socket, Home Assistant API access, Supervisor
 management privileges, or arbitrary user-supplied environment overrides.
 

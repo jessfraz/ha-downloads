@@ -6,8 +6,8 @@ process lifecycle, status, and authenticated ingress. Gluetun owns the VPN,
 firewall kill switch, and DNS. No custom VPN protocol or firewall is implemented.
 
 The app never uses host networking, the Docker socket, host PID/IPC namespaces,
-Home Assistant's API, or Supervisor management APIs. NET_ADMIN applies only to
-this app's namespace. Persistent state belongs in `/data`; media uses the normal
+Home Assistant's API, or Supervisor management APIs. NET_ADMIN and NET_RAW apply only to
+this app's namespace. NET_RAW supports Gluetun's ICMP health checks. Persistent state belongs in `/data`; media uses the normal
 Home Assistant `/media` mapping. No physical installation details or credentials
 belong in this repository.
 
