@@ -4,7 +4,7 @@ SABnzbd downloads through a Gluetun VPN, with connection status and the SABnzbd
 interface in Home Assistant's sidebar. The downloader waits for the VPN,
 firewall, and DNS checks to pass. The queue starts paused on each app start.
 
-The app uses NET_ADMIN and `/dev/net/tun`. It does not use host networking,
+The app uses NET_ADMIN, NET_RAW and `/dev/net/tun`. It does not use host networking,
 the Docker socket, Home Assistant's API, or Supervisor management APIs. Media
 is available under `/media`; private options and SABnzbd state live in `/data`.
 

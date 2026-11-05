@@ -210,8 +210,14 @@ async fn serve(args: Serve) -> Result<ExitCode> {
         tokio::select! {
             signal=shutdown_signal()=>signal?,
             result=task=>{
-                let _=result;
-                tx.send_replace(Status::degraded("","The protection service stopped. Check the app settings and restart it.",false));
+                match result {
+                    Ok(Err(error))=>eprintln!("Protected service failed: {error}"),
+                    Err(_)=>{
+                        eprintln!("The protection task stopped unexpectedly.");
+                        tx.send_replace(Status::degraded("","The protection service stopped. Restart the app.",false));
+                    }
+                    Ok(Ok(()))=>{}
+                }
                 shutdown_signal().await?;
                 runtime=None;
             }

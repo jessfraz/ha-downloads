@@ -1,3 +1,9 @@
+# 0.1.1
+
+Preserve trailing slashes in SABnzbd routes, including setup and login pages.
+Request NET_RAW for Gluetun's ping health check in Home Assistant's restricted
+runtime. Report handled service failures in the app log.
+
 # 0.1.0
 
 Initial experimental release: a Rust supervisor, Gluetun, SABnzbd, authenticated

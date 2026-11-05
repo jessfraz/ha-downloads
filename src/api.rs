@@ -157,7 +157,8 @@ fn content(body: String, kind: &str) -> Result<Response<Body>, HttpError> {
 }
 #[derive(Deserialize, JsonSchema)]
 struct Resource {
-    path: Vec<String>,
+    #[serde(rename = "path")]
+    _path: Vec<String>,
 }
 #[endpoint {method=GET,path="/app.js",tags=["web"]}]
 async fn javascript(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
@@ -179,56 +180,44 @@ async fn stylesheet(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, H
 async fn downloader_root(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
     proxy(r, "sabnzbd".into(), Vec::new()).await
 }
+fn downloader_path(r: &RequestContext<Arc<Context>>) -> String {
+    // Reassembling decoded router segments loses directory slashes and escapes.
+    r.request.uri().path().trim_start_matches('/').to_owned()
+}
 #[endpoint {method=GET,path="/sabnzbd/{path:.*}",unpublished=true,tags=["downloader"]}]
 async fn get(
     r: RequestContext<Arc<Context>>,
-    p: Path<Resource>,
+    _path: Path<Resource>,
 ) -> Result<Response<Body>, HttpError> {
-    proxy(
-        r,
-        format!("sabnzbd/{}", p.into_inner().path.join("/")),
-        Vec::new(),
-    )
-    .await
+    let path = downloader_path(&r);
+    proxy(r, path, Vec::new()).await
 }
 #[endpoint {method=POST,path="/sabnzbd/{path:.*}",unpublished=true,tags=["downloader"]}]
 async fn post(
     r: RequestContext<Arc<Context>>,
-    p: Path<Resource>,
+    _path: Path<Resource>,
     body: UntypedBody,
 ) -> Result<Response<Body>, HttpError> {
-    proxy(
-        r,
-        format!("sabnzbd/{}", p.into_inner().path.join("/")),
-        body.as_bytes().to_vec(),
-    )
-    .await
+    let path = downloader_path(&r);
+    proxy(r, path, body.as_bytes().to_vec()).await
 }
 #[endpoint {method=PUT,path="/sabnzbd/{path:.*}",unpublished=true,tags=["downloader"]}]
 async fn put(
     r: RequestContext<Arc<Context>>,
-    p: Path<Resource>,
+    _path: Path<Resource>,
     body: UntypedBody,
 ) -> Result<Response<Body>, HttpError> {
-    proxy(
-        r,
-        format!("sabnzbd/{}", p.into_inner().path.join("/")),
-        body.as_bytes().to_vec(),
-    )
-    .await
+    let path = downloader_path(&r);
+    proxy(r, path, body.as_bytes().to_vec()).await
 }
 #[endpoint {method=DELETE,path="/sabnzbd/{path:.*}",unpublished=true,tags=["downloader"]}]
 async fn delete(
     r: RequestContext<Arc<Context>>,
-    p: Path<Resource>,
+    _path: Path<Resource>,
     body: UntypedBody,
 ) -> Result<Response<Body>, HttpError> {
-    proxy(
-        r,
-        format!("sabnzbd/{}", p.into_inner().path.join("/")),
-        body.as_bytes().to_vec(),
-    )
-    .await
+    let path = downloader_path(&r);
+    proxy(r, path, body.as_bytes().to_vec()).await
 }
 fn connection_headers(headers: &HeaderMap) -> HashSet<String> {
     headers
@@ -501,7 +490,7 @@ mod http_tests {
         api::{self, Access, Context},
         status::{State, Status},
     };
-    use http::StatusCode;
+    use http::{Method, StatusCode};
     use serde::Deserialize;
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -824,6 +813,37 @@ mod http_tests {
                     .expect("redirect");
             assert_eq!(response.headers()["location"], location);
             captured.await.expect("capture");
+            server.close().await.expect("close");
+        }
+    }
+    #[tokio::test]
+    async fn proxy_keeps_directory_slashes_for_get_and_post() {
+        for method in [Method::GET, Method::POST] {
+            let (target, captured) = upstream(|_| {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+            })
+            .await;
+            let server = proxy_server(target).await;
+            let response = admin(client().request(
+                method.clone(),
+                format!(
+                    "http://{}/sabnzbd/config/general/?skip_wizard=1",
+                    server.local_addr()
+                ),
+            ))
+            .header("x-ingress-path", "/api/hassio_ingress/test")
+            .send()
+            .await
+            .expect("directory response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let request = captured.await.expect("capture");
+            assert!(
+                request.head.starts_with(&format!(
+                    "{method} /sabnzbd/config/general/?skip_wizard=1 HTTP/1.1"
+                )),
+                "{}",
+                request.head
+            );
             server.close().await.expect("close");
         }
     }
