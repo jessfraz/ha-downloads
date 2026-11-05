@@ -1,6 +1,6 @@
 [project]
 name = "ha-downloads-runtime"
-version = "0.1.3"
+version = "0.1.4"
 description = "Locked SABnzbd 5.1.3 runtime dependencies for Downloads"
 requires-python = ">=3.12,<3.14"
 license = "MIT"

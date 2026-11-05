@@ -233,6 +233,9 @@ impl Probe {
         Ok(Self {
             client: reqwest::Client::builder()
                 .no_proxy()
+                // These loopback probes run near Gluetun's short HTTP deadlines.
+                // Fresh connections avoid racing a peer's idle connection closure.
+                .pool_max_idle_per_host(0)
                 .timeout(Duration::from_secs(2))
                 .build()?,
             key,
@@ -495,6 +498,54 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+    #[tokio::test]
+    async fn loopback_control_checks_do_not_reuse_idle_connections() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let observed = accepted.clone();
+        let (stop, mut cancelled) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(async move {
+            let mut handlers = tokio::task::JoinSet::new();
+            loop {
+                let (mut stream, _) = tokio::select! { _=cancelled.changed()=>break, result=listener.accept()=>result.expect("accept") };
+                observed.fetch_add(1, Ordering::SeqCst);
+                let mut cancelled = cancelled.clone();
+                handlers.spawn(async move {
+                    let mut bytes=[0;4096];let mut request=Vec::new();
+                    loop {
+                        let count=tokio::select! {_=cancelled.changed()=>break,result=stream.read(&mut bytes)=>result.expect("request")};
+                        if count==0 {break;} request.extend_from_slice(&bytes[..count]);
+                        if request.ends_with(b"\r\n\r\n") {
+                            let body=r#"{"status":"running"}"#;
+                            let response=format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",body.len());
+                            stream.write_all(response.as_bytes()).await.expect("response");request.clear();
+                        }
+                    }
+                });
+            }
+            while let Some(result) = handlers.join_next().await {
+                result.expect("handler");
+            }
+        });
+        let mut probe = Probe::new(zeroize::Zeroizing::new("fixture".into())).expect("probe");
+        probe.control = format!("http://{address}/").parse().expect("URL");
+        let first = probe.running("vpn").await;
+        let second = probe.running("vpn").await;
+        stop.send(true).expect("stop");
+        server.await.expect("server");
+        assert_eq!(first.outcome, Outcome::Passed);
+        assert_eq!(second.outcome, Outcome::Passed);
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            2,
+            "Each local check must avoid an idle connection that can race Gluetun's deadline"
+        );
+    }
     async fn endpoint(
         status: u16,
         body: &str,

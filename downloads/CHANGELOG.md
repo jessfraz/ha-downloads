@@ -1,3 +1,9 @@
+# 0.1.4
+
+Use fresh HTTP connections for local Gluetun probes to avoid reusing connections
+near the upstream server's short request deadlines. Keep the same timeouts,
+authentication, and protection checks.
+
 # 0.1.3
 
 Distinguish a stopped VPN service from failed health checks and unavailable
