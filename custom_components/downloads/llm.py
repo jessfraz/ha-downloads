@@ -1,12 +1,9 @@
 """Contribute an exposed, read-only Downloads health query to native Assist."""
 
 import probatio as vol
-from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import llm
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
-from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.llm import (
     LLMContext,
     Tool,
@@ -16,13 +13,8 @@ from homeassistant.helpers.llm import (
 )
 
 from . import DownloadsConfigEntry
+from .access import HealthAccessError, async_health_snapshot, health_entity_id
 from .const import DOMAIN
-
-
-def _entity_id(hass: HomeAssistant, entry: DownloadsConfigEntry) -> str | None:
-    return er.async_get(hass).async_get_entity_id(
-        "binary_sensor", DOMAIN, f"{entry.unique_id}_problem"
-    )
 
 
 @callback
@@ -30,10 +22,10 @@ def async_get_tools(
     hass: HomeAssistant, llm_context: LLMContext, api_id: str
 ) -> llm.LLMTools | None:
     """Only an explicitly exposed, loaded installation contributes a tool."""
-    if api_id != "assist":
+    if api_id != "assist" or llm_context.assistant is None:
         return None
     for entry in hass.config_entries.async_loaded_entries(DOMAIN):
-        entity_id = _entity_id(hass, entry)
+        entity_id = health_entity_id(hass, entry)
         if entity_id and async_should_expose(hass, llm_context.assistant, entity_id):
             return llm.LLMTools(
                 tools=[DownloadsHealth(entry)],
@@ -72,30 +64,17 @@ class DownloadsHealth(Tool):
             self.parameters(tool_input.tool_args)
         except vol.Invalid:
             return ToolResult(data={"error": "invalid_arguments"}, error=True)
-        entity_id = _entity_id(hass, self.entry)
-        if not entity_id or not async_should_expose(
-            hass, llm_context.assistant, entity_id
-        ):
+        if llm_context.assistant is None:
             return ToolResult(data={"error": "not_exposed"}, error=True)
         context = llm_context.context
-        user = (
-            await hass.auth.async_get_user(context.user_id)
-            if context and context.user_id
-            else None
-        )
-        if (
-            user is None
-            or not user.is_active
-            or not user.permissions.check_entity(entity_id, POLICY_READ)
-        ):
-            return ToolResult(data={"error": "permission_denied"}, error=True)
-        if (
-            self.entry.state is not ConfigEntryState.LOADED
-            or self.entry.runtime_data is not self.coordinator
-            or not self.coordinator.last_update_success
-            or hass.states.get(entity_id) is None
-        ):
-            return ToolResult(data={"error": "unavailable"}, error=True)
-        if not async_should_expose(hass, llm_context.assistant, entity_id):
-            return ToolResult(data={"error": "not_exposed"}, error=True)
-        return ToolResult(data=self.coordinator.data.projection())
+        try:
+            result = await async_health_snapshot(
+                hass,
+                self.entry,
+                self.coordinator,
+                context.user_id if context else None,
+                llm_context.assistant,
+            )
+        except HealthAccessError as error:
+            return ToolResult(data={"error": error.code.value}, error=True)
+        return ToolResult(data=result)

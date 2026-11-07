@@ -1,13 +1,18 @@
 """Real Home Assistant entities with mocked Supervisor and HTTP boundaries."""
 
+import os
 from dataclasses import dataclass
 from ipaddress import IPv4Address
+from pathlib import Path
 
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
-from custom_components.downloads.const import APP_URL
+from custom_components.downloads import DownloadsConfigEntry
+from custom_components.downloads.const import APP_URL, CONF_ADDON_SLUG, DOMAIN
 
 APP_SLUG = "testrepo_downloads"
 HEALTH_URL = "http://172.30.33.7:8080/healthz"
@@ -73,3 +78,30 @@ def supervisor(monkeypatch: pytest.MonkeyPatch) -> Supervisor:
         "custom_components.downloads.config_flow.is_hassio", lambda hass: True
     )
     return client
+
+
+@pytest.fixture
+async def entry(
+    hass: HomeAssistant, supervisor: Supervisor, aioclient_mock: AiohttpClientMocker
+) -> DownloadsConfigEntry:
+    aioclient_mock.get(HEALTH_URL, json=health_record())
+    config = MockConfigEntry(
+        domain=DOMAIN, unique_id=APP_SLUG, data={CONF_ADDON_SLUG: APP_SLUG}
+    )
+    config.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config.entry_id)
+    await hass.async_block_till_done()
+    return config
+
+
+@pytest.fixture
+def downloads_cli_binary() -> Path:
+    """Require the real built CLI rather than skipping its native HTTP proof."""
+    binary = Path(
+        os.environ.get(
+            "DOWNLOADS_TEST_BINARY",
+            Path(__file__).resolve().parents[1] / "target/debug/ha-downloads",
+        )
+    )
+    assert binary.is_file(), "Build the CLI with cargo build --bin ha-downloads first"
+    return binary

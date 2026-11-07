@@ -1,4 +1,4 @@
-use crate::status::{DownloaderState, State, Status};
+use crate::status::{DownloaderState, State, Status, StatusSnapshot};
 use dropshot::{
     ApiDescription, Body, ClientErrorStatusCode, ConfigDropshot, HttpError, HttpResponseOk,
     HttpServer, HttpServerStarter, Path, RequestContext, UntypedBody, endpoint,
@@ -148,19 +148,13 @@ async fn health(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpE
 #[endpoint {method=GET,path="/api/v1/status",tags=["system"]}]
 async fn app_status(
     r: RequestContext<Arc<Context>>,
-) -> Result<HttpResponseOk<StatusResponse>, HttpError> {
+) -> Result<HttpResponseOk<StatusSnapshot>, HttpError> {
     authenticate(&r)?;
     let status = r.context().status.borrow().clone();
-    Ok(HttpResponseOk(StatusResponse {
+    Ok(HttpResponseOk(StatusSnapshot {
         health: status.health(),
         status,
     }))
-}
-#[derive(serde::Serialize, JsonSchema)]
-struct StatusResponse {
-    #[serde(flatten)]
-    status: Status,
-    health: crate::status::Health,
 }
 #[endpoint {method=GET,path="/api/v1/health",tags=["system"]}]
 async fn readiness(

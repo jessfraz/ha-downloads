@@ -17,6 +17,7 @@ packaging:
     shellcheck scripts/container-smoke.sh scripts/network-test.sh
 
 home-assistant:
+    cargo build --locked --bin ha-downloads
     uv sync --project integration --frozen --only-group dev
     uv run --project integration --frozen --only-group dev ruff check --config integration/pyproject.toml custom_components tests_ha
     uv run --project integration --frozen --only-group dev ruff format --check --config integration/pyproject.toml custom_components tests_ha

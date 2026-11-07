@@ -10,6 +10,10 @@ repository = "https://github.com/jessfraz/ha-downloads"
 name = "downloads"
 path = "src/main.rs"
 
+[[bin]]
+name = "ha-downloads"
+path = "src/bin/ha-downloads.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

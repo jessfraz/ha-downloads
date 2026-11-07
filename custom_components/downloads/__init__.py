@@ -3,11 +3,22 @@
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .coordinator import DownloadsCoordinator
 
 type DownloadsConfigEntry = ConfigEntry[DownloadsCoordinator]
+CONFIG_SCHEMA = cv.config_entry_only_config_schema("downloads")
 PLATFORMS = [Platform.BINARY_SENSOR]
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register one fixed read-only route on HA's authenticated HTTP server."""
+    from .http import DownloadsHealthView
+
+    hass.http.register_view(DownloadsHealthView(hass))
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: DownloadsConfigEntry) -> bool:

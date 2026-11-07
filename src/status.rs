@@ -67,6 +67,14 @@ pub struct Status {
     pub diagnostics: Monitoring,
 }
 
+/// Native API snapshot shared by the producer and its typed CLI client.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct StatusSnapshot {
+    #[serde(flatten)]
+    pub status: Status,
+    pub health: Health,
+}
+
 /// Functional readiness is separate from `/healthz`, which serves the watchdog.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct Health {

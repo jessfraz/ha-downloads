@@ -14,7 +14,6 @@ from homeassistant.helpers.llm import APIInstance, LLMContext, ToolInput, async_
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
     MockUser,
     async_fire_time_changed,
 )
@@ -25,20 +24,6 @@ from custom_components.downloads.const import CONF_ADDON_SLUG, DOMAIN
 from custom_components.downloads.coordinator import HealthData
 
 from .conftest import APP_SLUG, HEALTH_URL, Supervisor, health_record
-
-
-@pytest.fixture
-async def entry(
-    hass: HomeAssistant, supervisor: Supervisor, aioclient_mock: AiohttpClientMocker
-) -> DownloadsConfigEntry:
-    aioclient_mock.get(HEALTH_URL, json=health_record())
-    config = MockConfigEntry(
-        domain=DOMAIN, unique_id=APP_SLUG, data={CONF_ADDON_SLUG: APP_SLUG}
-    )
-    config.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(config.entry_id)
-    await hass.async_block_till_done()
-    return config
 
 
 async def test_native_config_flow_selects_only_the_installed_app(
@@ -155,6 +140,10 @@ async def test_native_assist_requires_exposure_user_read_permission_and_current_
     }
     tool = next(tool for tool in api.tools if tool.integration == DOMAIN)
     assert tool.annotations.read_only is True
+    without_assistant_api = await async_get_api(
+        hass, "assist", replace(api.llm_context, assistant=None)
+    )
+    assert not any(tool.integration == DOMAIN for tool in without_assistant_api.tools)
     result = await api.async_call_tool(
         ToolInput(tool_name="downloads__health", tool_args={})
     )
@@ -174,6 +163,13 @@ async def test_native_assist_requires_exposure_user_read_permission_and_current_
     assert result.data["error"] == "invalid_arguments"
     async_expose_entity(hass, "conversation", entity, False)
     result = await api.async_call_tool(
+        ToolInput(tool_name="downloads__health", tool_args={})
+    )
+    assert result.error
+    assert result.data["error"] == "not_exposed"
+    # A cached tool cannot turn a missing assistant into an HTTP-style query.
+    without_assistant = replace(api, llm_context=replace(api.llm_context, assistant=None))
+    result = await without_assistant.async_call_tool(
         ToolInput(tool_name="downloads__health", tool_args={})
     )
     assert result.error

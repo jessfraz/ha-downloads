@@ -53,6 +53,42 @@ output is never forwarded: proxy logs can contain credentials unknown to this
 app. See [diagnostic behavior](downloads/DOCS.md#diagnostics) for retention and
 failure details.
 
+## Read-only CLI
+
+`ha-downloads` is available from this repository's default Nix package. Help
+works offline. Use the existing Home Assistant credential wrapper for HA access:
+
+```sh
+ha-downloads --help
+fetch-home-assistant -- ha-downloads --transport home-assistant status
+```
+
+The HA route requires app and integration version 0.1.6 or newer and reads the
+integration's cached, safe health snapshot. It requires a loaded Downloads
+integration and the active user's entity read permission. Assist tools also
+require the problem sensor exposed to Assist. It does not forward credentials
+to the app, use ingress sessions, change the queue, or start any service.
+
+A standalone app can instead use its existing native API and token file:
+
+```sh
+ha-downloads status --url https://downloads.example/ --token-file /path/to/token
+```
+
+`DOWNLOADS_URL` and `DOWNLOADS_TOKEN_FILE` supply the same native options. Inside
+the app, `downloads doctor` or `ha-downloads status` can read the private local
+status file. Native output preserves the status fields and adds `transport` and
+`health`; HA output contains only `transport` and the safe `health` projection.
+Remote health uses the server's check age, independent of the client's clock.
+HA access requires HTTPS, except for HTTP on loopback. The client ignores ambient
+proxy configuration and does not retry requests.
+
+Status output is typed JSON. Exit 0 means ready, 2 means health is not ready
+(including stale checks), and 1 means the request could not be completed. Errors
+are redacted JSON on stderr, with a fixed code and optional HTTP status. Only the
+`downloads serve` command starts app services, within its existing private Linux
+container boundary; the `ha-downloads` client has no serve or control command.
+
 ## Develop
 
 ```sh
