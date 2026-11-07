@@ -4,11 +4,36 @@ import json
 import os
 import socket
 import ssl
+import struct
 import sys
 import urllib.request
 
 mode = sys.argv[1]
 context = ssl.create_default_context(cafile="/fixture/cert.pem")
+if mode == "tls-listeners":
+    # A connection interrupted before its TLS handshake must not prevent the
+    # fixture from accepting another client, as happens during a tunnel cut.
+    for port in (443, 853):
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=2) as raw:
+                    with context.wrap_socket(raw, server_hostname="origin.test") as stream:
+                        if port == 443:
+                            stream.sendall(
+                                b"GET /handshake-probe HTTP/1.0\r\nHost: origin.test\r\n\r\n"
+                            )
+                            assert b"200" in stream.recv(512)
+                        else:
+                            query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+                            query += b"\x07example\x03com\x00\x00\x01\x00\x01"
+                            stream.sendall(struct.pack("!H", len(query)) + query)
+                            assert stream.recv(4096)[2:4] == b"\x12\x34"
+            except OSError as error:
+                raise AssertionError(
+                    f"TLS listener {port} blocked by an incomplete handshake"
+                ) from error
+    print(json.dumps({"incomplete_tls_handshakes_do_not_block_listeners": True}), flush=True)
+    raise SystemExit(0)
 if mode in ("proxy-up", "proxy-down"):
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({"https": "http://198.19.0.4:8888"}),

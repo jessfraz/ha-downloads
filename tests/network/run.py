@@ -320,13 +320,16 @@ exec sleep 600
                 server,
                 "/opt/venv/bin/python",
                 "-c",
-                "import socket;s=socket.create_connection(('127.0.0.1',443),2);s.close()",
+                "import socket\n"
+                "for port in (443,853,53):\n"
+                " s=socket.create_connection(('127.0.0.1',port),2);s.close()",
                 check=False,
             ).returncode
             == 0
         ),
         "local DNS/origin server",
     )
+    execute(server, "/opt/venv/bin/python", "/fixture/probe.py", "tls-listeners")
     # Independent unprotected control proves the same WAN and IPv6 destinations are reachable.
     control = start(
         "downloads-control-" + NONCE,
@@ -635,6 +638,7 @@ print(json.dumps(children))
         "generated_data_root_ownership_verified": True,
         "generated_data_initial_uid": ownership["initial_uid"],
         "dns_tls_and_origin_observed_through_tunnel": True,
+        "incomplete_tls_handshakes_do_not_block_listeners": True,
         "http_connect_proxy_up_and_failclosed": True,
         "unauthenticated_gluetun_controls_rejected": True,
         "outage_origin_still_reachable_by_unprotected_control": True,

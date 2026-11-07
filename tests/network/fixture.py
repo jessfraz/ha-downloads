@@ -90,25 +90,60 @@ class Origin(BaseHTTPRequestHandler):
         pass
 
 
-class V6Http(ThreadingHTTPServer):
-    address_family = socket.AF_INET6
-
-
 class ReusableTcp(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+
+class TlsMixIn:
+    def get_request(
+        self,
+    ) -> tuple[ssl.SSLSocket, tuple[str, int] | tuple[str, int, int, int]]:
+        request, address = super().get_request()
+        try:
+            # A listening SSLSocket performs the handshake in accept(), before
+            # ThreadingMixIn can dispatch. A peer lost during a tunnel cut can
+            # then block every subsequent TLS client. Handshake in the worker.
+            return context.wrap_socket(
+                request, server_side=True, do_handshake_on_connect=False
+            ), address
+        except OSError:
+            request.close()
+            raise
+
+    def process_request_thread(
+        self, request: ssl.SSLSocket, address: tuple[str, int] | tuple[str, int, int, int]
+    ) -> None:
+        try:
+            request.settimeout(5)
+            request.do_handshake()
+            request.settimeout(None)
+        except OSError:
+            self.shutdown_request(request)
+            return
+        super().process_request_thread(request, address)
+
+
+class TlsTcp(TlsMixIn, ReusableTcp):
+    pass
+
+
+class TlsHttp(TlsMixIn, ThreadingHTTPServer):
+    pass
+
+
+class V6Http(TlsHttp):
+    address_family = socket.AF_INET6
 
 
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain("/fixture/cert.pem", "/fixture/key.pem")
 servers = []
 if os.environ.get("ROLE") == "vpn":
-    server = ReusableTcp(("0.0.0.0", 853), DnsTcp)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server = TlsTcp(("0.0.0.0", 853), DnsTcp)
     servers.append(server)
-for address, cls, port in [("0.0.0.0", ThreadingHTTPServer, 443), ("::", V6Http, 8443)]:
+for address, cls, port in [("0.0.0.0", TlsHttp, 443), ("::", V6Http, 8443)]:
     server = cls((address, port), Origin)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
     servers.append(server)
 servers.append(socketserver.ThreadingUDPServer(("0.0.0.0", 53), DnsUdp))
 servers.append(ReusableTcp(("0.0.0.0", 53), DnsTcp))
