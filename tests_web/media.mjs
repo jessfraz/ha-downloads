@@ -307,7 +307,10 @@ test("activity polling preserves focused actions for unchanged and changed progr
 test("recovery polling keeps its focused check action and selection moves desktop focus into detail", async (t) => {
   const { page, fixture } = await panel(t);
   await find(page, "Primer", "Primer, 2004, movie");
-  assert.equal(await page.locator("#media-detail-title").evaluate((element) => element === document.activeElement), true);
+  // Selection renders a loading title, then replaces it when details arrive.
+  // Wait for the completed selection and inspect the current DOM atomically.
+  await page.getByRole("button", { name: "Request movie", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.getElementById("media-detail-title") === document.activeElement), true);
   fixture.onPost = async (route) => route.abort("connectionfailed");
   await page.getByRole("button", { name: "Request movie", exact: true }).click();
   const check = page.locator("#detail-check-request"); await check.focus();
