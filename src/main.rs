@@ -59,7 +59,13 @@ struct Doctor {
     status_file: PathBuf,
 }
 async fn doctor(args: Doctor) -> Result<ExitCode> {
-    let status: Status = if let Some(base) = args.url {
+    #[derive(serde::Deserialize)]
+    struct RemoteStatus {
+        #[serde(flatten)]
+        status: Status,
+        health: ha_downloads::status::Health,
+    }
+    let (status, ready) = if let Some(base) = args.url {
         anyhow::ensure!(
             matches!(base.scheme(), "http" | "https")
                 && base.username().is_empty()
@@ -91,17 +97,21 @@ async fn doctor(args: Doctor) -> Result<ExitCode> {
             "Status API rejected the request (HTTP {}).",
             response.status().as_u16()
         );
-        response
-            .json()
+        let snapshot = response
+            .json::<RemoteStatus>()
             .await
-            .map_err(|_| anyhow::anyhow!("Status API returned an invalid response."))?
+            .map_err(|_| anyhow::anyhow!("Status API returned an invalid response."))?;
+        // The app owns the check clock. A remote CLI's wall clock may differ.
+        (snapshot.status, snapshot.health.ready)
     } else {
         let bytes = tokio::fs::read(args.status_file)
             .await
             .context("No local app status is available. Start the app or use --url.")?;
-        serde_json::from_slice(&bytes).context("Local app status is invalid.")?
+        let status: Status =
+            serde_json::from_slice(&bytes).context("Local app status is invalid.")?;
+        let ready = status.health().ready;
+        (status, ready)
     };
-    let ready = status.health().ready;
     println!("{}", serde_json::to_string_pretty(&status)?);
     Ok(if ready {
         ExitCode::SUCCESS

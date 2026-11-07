@@ -285,6 +285,7 @@ test("starting and stopping remain understandable without exposing a queue", asy
   status.state = "starting";
   status.message = "";
   status.vpn.state = "connecting";
+  status.health = { ready: false, reasons: ["not_ready", "checks_missing"], checked_at_unix_ms: null, age_ms: null, max_age_ms: 30000 };
   const { page, fixture } = await panel(t, status);
   await heading(page, "Connecting securely");
   assert.equal(await page.locator("#vpn-state").innerText(), "Connecting");
@@ -361,4 +362,16 @@ test("stale functional checks close the queue and retain fixed service failure d
   assert.match(await page.locator("#diagnostic-history").innerText(), /Downloader exited.*exit 23/);
   assert.equal(await page.getByRole("link", { name: "Source code" }).getAttribute("href"), "https://github.com/jessfraz/ha-downloads");
   assert.deepEqual(fixture.errors, []);
+});
+
+
+test("terminal service failures preserve their specific recovery message", async (t) => {
+  const status = setupStatus();
+  status.state = "degraded";
+  status.message = "Protected services could not be fully stopped. Restart the app.";
+  status.health = { ready: false, reasons: ["not_ready", "checks_missing"], checked_at_unix_ms: null, age_ms: null, max_age_ms: 30000 };
+  const { page } = await panel(t, status);
+  await heading(page, "VPN connection interrupted");
+  assert.equal(await page.locator("#connection-message").innerText(), status.message);
+  assert.equal(await page.locator("iframe").count(), 0);
 });

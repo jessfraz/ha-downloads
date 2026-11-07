@@ -136,3 +136,59 @@ fn doctor_does_not_accept_a_ready_label_without_current_checks() {
     let actual: Status = serde_json::from_slice(&output.stdout).expect("typed status");
     assert_eq!(actual.state, State::Ready);
 }
+
+#[tokio::test]
+async fn remote_doctor_uses_the_servers_readiness_despite_clock_skew() {
+    use ha_downloads::status::Health;
+    use serde::Serialize;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    #[derive(Serialize)]
+    struct RemoteStatus {
+        #[serde(flatten)]
+        status: Status,
+        health: Health,
+    }
+    let mut status = ready_status();
+    let mut health = status.health();
+    let server_time = 9_999_999_999_999;
+    status.diagnostics.checked_at_unix_ms = Some(server_time);
+    status.diagnostics.downloader_checked_at_unix_ms = Some(server_time);
+    health.checked_at_unix_ms = Some(server_time);
+    health.age_ms = Some(0);
+    let body = serde_json::to_vec(&RemoteStatus { status, health }).expect("response");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}/", listener.local_addr().expect("address"));
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        let mut request = [0; 4096];
+        let count = stream.read(&mut request).await.expect("request");
+        let request = std::str::from_utf8(&request[..count]).expect("request text");
+        assert!(request.starts_with("GET /api/v1/status "));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-token")
+        );
+        stream.write_all(format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        ).as_bytes()).await.expect("headers");
+        stream.write_all(&body).await.expect("body");
+    });
+    let directory = tempfile::tempdir().expect("token directory");
+    let path = directory.path().join("token");
+    std::fs::write(&path, "fixture-token").expect("fixture credential");
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_downloads"))
+        .args(["doctor", "--url", &url, "--token-file"])
+        .arg(path)
+        .env("NO_PROXY", "127.0.0.1")
+        .output()
+        .await
+        .expect("doctor");
+    server.await.expect("HTTP fixture");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+}

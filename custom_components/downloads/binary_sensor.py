@@ -32,6 +32,7 @@ class DownloadsProblem(CoordinatorEntity[DownloadsCoordinator], BinarySensorEnti
     _attr_translation_key = "problem"
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _unrecorded_attributes = frozenset({"checked_at_unix_ms", "age_ms"})
 
     def __init__(self, entry: DownloadsConfigEntry) -> None:
         super().__init__(entry.runtime_data)

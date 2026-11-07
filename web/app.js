@@ -205,7 +205,7 @@
       return;
     }
     closeDownloads();
-    if (status.health?.reasons.some((reason) => reason === "checks_stale" || reason === "checks_missing") && !setup && !stopping) {
+    if (status.state === "ready" && status.health?.reasons.some((reason) => reason === "checks_stale" || reason === "checks_missing")) {
       for (const name of ["vpn", "firewall", "dns", "downloader"]) {
         setCheck(name, "Unverified", "Recent check results are unavailable.");
       }
