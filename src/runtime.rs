@@ -335,6 +335,7 @@ impl Children {
                         "import json,sabnzbd.decoder; print(json.dumps({'modules_ready':sabnzbd.decoder.SABCTOOLS_ENABLED}))",
                     ])
                     .env_clear()
+                    .current_dir("/opt")
                     .env("PYTHONPATH", "/opt")
                     .env("PYTHONDONTWRITEBYTECODE", "1")
                     .stdin(Stdio::null())
