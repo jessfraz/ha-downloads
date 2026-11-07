@@ -576,6 +576,10 @@ os.kill(vpn,signal.SIGSTOP);os.kill(glt,signal.SIGKILL)
         "completed child-exit cleanup",
     )
     terminal = app_status(app)
+    failure = terminal["diagnostics"]["last_failure"]
+    assert failure["reason"] == "vpn_exited", failure
+    assert failure["signal"] == 9 and failure["exit_code"] is None, failure
+    assert failure["at_unix_ms"] > 0 and failure["cleanup_failed"] is False, failure
     assert terminal["diagnostics"]["checked_at_unix_ms"] is None, terminal
     checks = terminal["diagnostics"]["checks"]
     assert checks and all(check["outcome"] == "not_checked" for check in checks.values()), terminal
@@ -609,6 +613,26 @@ print(json.dumps(children))
         "-c",
         sab_api + "assert call('queue')['queue']['paused'] is True",
     )
+    # The new process has no in-memory failure, but the native container journal
+    # must retain the typed cause from the previous run, without raw errors.
+    assert app_status(app)["diagnostics"]["last_failure"] is None
+    logs = docker("logs", app)
+    lifecycle = []
+    for line in (logs.stdout + "\n" + logs.stderr).splitlines():
+        try:
+            lifecycle.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    assert any(
+        row.get("event") == "protection_service_failed"
+        and row.get("reason") == "vpn_exited"
+        and row.get("at_unix_ms", 0) > 0
+        for row in lifecycle
+    ), "Typed service failure did not survive the app restart in the journal"
+    assert any(
+        row.get("event") == "vpn_process_exited" and row.get("signal") == 9
+        for row in lifecycle
+    ), "Typed VPN process exit did not survive in the journal"
     evidence = []
     for line in docker("logs", server).stdout.splitlines():
         try:
@@ -632,6 +656,7 @@ print(json.dumps(children))
         "child_exit_stopped_downloader": True,
         "terminal_failure_unhealthy": True,
         "terminal_checks_invalidated": True,
+        "typed_child_failure_retained_after_restart": True,
         "recoverable_states_remain_healthy": True,
         "separate_group_stopped_openvpn_killed_and_reaped": True,
         "cold_start_gated": True,

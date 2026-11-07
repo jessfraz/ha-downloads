@@ -1,6 +1,7 @@
 """Exercise native configuration, entities, transport failures and Assist access."""
 
 from dataclasses import replace
+from datetime import timedelta
 from ipaddress import IPv4Address
 from time import monotonic
 
@@ -11,7 +12,12 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.llm import APIInstance, LLMContext, ToolInput, async_get_api
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    MockUser,
+    async_fire_time_changed,
+)
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.downloads import DownloadsConfigEntry
@@ -179,3 +185,34 @@ async def test_native_assist_requires_exposure_user_read_permission_and_current_
     )
     assert result.error
     assert result.data["error"] == "unavailable"
+
+
+async def test_installed_problem_sensor_ages_when_its_poller_stops(
+    hass: HomeAssistant,
+    entry: DownloadsConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entity = "binary_sensor.downloads_problem"
+    assert hass.states.get(entity).state == "off"
+    await entry.runtime_data.async_shutdown()
+    calls = aioclient_mock.call_count
+    # Advance the snapshot's monotonic clock without running its stopped poller.
+    observed_at = entry.runtime_data.data.received_at
+    monkeypatch.setattr(
+        "custom_components.downloads.coordinator.monotonic", lambda: observed_at + 35
+    )
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=35))
+    await hass.async_block_till_done()
+    assert aioclient_mock.call_count == calls
+    assert hass.states.get(entity).state == "on"
+    assert "checks_stale" in hass.states.get(entity).attributes["reasons"]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    unloaded = hass.states.get(entity)
+    assert unloaded.state == "unavailable"
+    assert unloaded.attributes["restored"] is True
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=70))
+    await hass.async_block_till_done()
+    assert hass.states.get(entity) is unloaded
+    assert aioclient_mock.call_count == calls
