@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use ha_downloads::{
     api::{self, Access},
     config::Config,
-    monitor::{LifecycleEvent, log_lifecycle},
+    monitor::{LifecycleEvent, ServiceFailure, log_lifecycle},
     status::{State, Status},
 };
 use std::{
@@ -212,7 +212,9 @@ async fn serve(args: Serve) -> Result<ExitCode> {
             signal=shutdown_signal()=>signal?,
             result=task=>{
                 match result {
-                    Ok(Err(_))=>log_lifecycle(LifecycleEvent::ProtectionServiceFailed),
+                    Ok(Err(error))=>log_lifecycle(LifecycleEvent::ProtectionServiceFailed {
+                        reason: error.downcast_ref::<ServiceFailure>().copied(),
+                    }),
                     Err(_)=>{
                         log_lifecycle(LifecycleEvent::ProtectionTaskStopped);
                         tx.send_replace(Status::degraded("","The protection service stopped. Restart the app.",false));

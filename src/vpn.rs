@@ -351,7 +351,7 @@ impl Probe {
             .map(|p| p.public_ip.to_string())
     }
 }
-fn request_failure(error: &reqwest::Error, started: Instant) -> Check {
+pub(crate) fn request_failure(error: &reqwest::Error, started: Instant) -> Check {
     use std::error::Error;
     let mut check = Check::measured(
         if error.is_timeout() {

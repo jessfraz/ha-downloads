@@ -85,6 +85,36 @@ def app_status(app: str) -> dict[str, object]:
     return json.loads(response.stdout) if response.returncode == 0 else {}
 
 
+def app_health(app: str) -> int:
+    response = execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        """import urllib.error,urllib.request
+try:
+ with urllib.request.urlopen('http://127.0.0.1:8099/healthz',timeout=5) as response:
+  print(response.status)
+except urllib.error.HTTPError as error:
+ print(error.code)
+""",
+    )
+    return int(response.stdout)
+
+
+def start_vpn(server: str) -> None:
+    execute(
+        server,
+        "/usr/sbin/openvpn2.6",
+        "--config",
+        "/fixture/server.conf",
+        "--daemon",
+        "--log",
+        "/tmp/test-vpn.log",
+        "--writepid",
+        "/tmp/test-vpn.pid",
+    )
+
+
 def is_state(app: str, expected: str) -> bool:
     state = app_status(app)
     if state.get("state") == "degraded" and state.get("downloader", {}).get("state") == "stopped":
@@ -382,6 +412,7 @@ print(json.dumps({'initial_uid':initial_uid,'root_owned':True}))
         "ip -6 route replace default via fd12:3456:789a::3; exec /usr/local/bin/downloads serve",
     )
     wait(lambda: is_state(app, "starting"), "runtime waits for VPN")
+    assert app_health(app) == 200
     sab_pids = """import json,pathlib
 pids=[]
 for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
@@ -391,17 +422,7 @@ for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
 print(json.dumps(pids))
 """
     assert json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout) == []
-    execute(
-        server,
-        "/usr/sbin/openvpn2.6",
-        "--config",
-        "/fixture/server.conf",
-        "--daemon",
-        "--log",
-        "/tmp/test-vpn.log",
-        "--writepid",
-        "/tmp/test-vpn.pid",
-    )
+    start_vpn(server)
     wait(
         lambda: is_state(app, "ready"),
         "real runtime VPN/firewall/DNS and SAB readiness",
@@ -421,19 +442,26 @@ else:
     )
     initial = app_status(app)
     assert initial["protection"] == {"kill_switch": "verified", "dns": "verified"}, initial
+    assert app_health(app) == 200
     up = json.loads(execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "up").stdout)
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "proxy-up")
     # SAB owns the pause state. Do not test a lookalike process or bypass the real HTTP API.
-    sab_pause = """import json,urllib.parse,urllib.request
+    sab_api = """import json,urllib.parse,urllib.request
 from configobj import ConfigObj
 c=ConfigObj('/data/sabnzbd/sabnzbd.ini');key=c['misc']['api_key']
 base='http://127.0.0.1:8081/sabnzbd/api?'
 def call(mode):
  query=urllib.parse.urlencode({'apikey':key,'mode':mode,'output':'json'})
  return json.load(urllib.request.urlopen(base+query))
-call('pause');assert call('queue')['queue']['paused'] is True
 """
-    execute(app, "/opt/venv/bin/python", "-c", sab_pause)
+    execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        sab_api
+        + "assert call('queue')['queue']['paused'] is False, 'Default queue was forced paused'\n"
+        + "call('pause');assert call('queue')['queue']['paused'] is True",
+    )
     # Failed answers remain a visible DNS failure without inventing a direct resolver fallback.
     execute(server, "touch", "/tmp/dns-fail")
     wait(
@@ -442,6 +470,7 @@ call('pause');assert call('queue')['queue']['paused'] is True
     dns_failure = app_status(app)
     assert dns_failure["state"] == "degraded", dns_failure
     assert dns_failure["downloader"]["state"] == "running", dns_failure
+    assert app_health(app) == 200
     execute(server, "rm", "/tmp/dns-fail")
     wait(lambda: is_state(app, "ready"), "DNS answers recover")
     # A stopped upstream is a real tunnel outage. No namespace or production firewall is edited.
@@ -451,22 +480,48 @@ call('pause');assert call('queue')['queue']['paused'] is True
         "runtime observes tunnel outage",
         seconds=90,
     )
+    assert app_health(app) == 200
     down = json.loads(execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "down").stdout)
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "control")
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "proxy-down")
-    execute(
-        server,
-        "/usr/sbin/openvpn2.6",
-        "--config",
-        "/fixture/server.conf",
-        "--daemon",
-        "--log",
-        "/tmp/test-vpn.log",
-        "--writepid",
-        "/tmp/test-vpn.pid",
-    )
+    start_vpn(server)
     wait(lambda: is_state(app, "ready"), "VPN reconnects without resuming queue")
-    execute(app, "/opt/venv/bin/python", "-c", sab_pause.replace("call('pause');", ""))
+    assert app_health(app) == 200
+    execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        sab_api + "assert call('queue')['queue']['paused'] is True",
+    )
+    # A running queue must also remain running across an ordinary tunnel
+    # reconnect. The runtime must not replace SAB or manufacture a pause.
+    execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        sab_api + "call('resume');assert call('queue')['queue']['paused'] is False",
+    )
+    unpaused_sab = json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout)
+    assert len(unpaused_sab) == 1, unpaused_sab
+    print(json.dumps({"running_queue_reconnect_started": True}), flush=True)
+    execute(server, "/bin/sh", "-c", "kill -TERM $(cat /tmp/test-vpn.pid)")
+    wait(
+        lambda: app_status(app).get("state") == "degraded",
+        "runtime observes tunnel outage with running queue",
+        seconds=90,
+    )
+    assert app_health(app) == 200
+    start_vpn(server)
+    wait(lambda: is_state(app, "ready"), "VPN reconnects with running queue")
+    assert app_health(app) == 200
+    execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        sab_api + "assert call('queue')['queue']['paused'] is False",
+    )
+    assert json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout) == unpaused_sab
+    print(json.dumps({"running_queue_recovered": True}), flush=True)
     execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "up")
     # Abrupt loss of Gluetun must stop SAB; it cannot leave a downloader behind.
     execute(
@@ -495,6 +550,11 @@ os.kill(vpn,signal.SIGSTOP);os.kill(glt,signal.SIGKILL)
         ),
         "completed child-exit cleanup",
     )
+    terminal = app_status(app)
+    assert terminal["diagnostics"]["checked_at_unix_ms"] is None, terminal
+    checks = terminal["diagnostics"]["checks"]
+    assert checks and all(check["outcome"] == "not_checked" for check in checks.values()), terminal
+    assert app_health(app) == 503
     remaining_sab = json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout)
     assert remaining_sab == [], {"sab_pids": remaining_sab, "status": app_status(app)}
     children = json.loads(
@@ -514,6 +574,25 @@ print(json.dumps(children))
         ).stdout
     )
     assert children == [], children
+    # With both services stopped, change only SAB's own startup preference in
+    # this fixture's persistent config, then restart the same production app.
+    execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        "from configobj import ConfigObj;"
+        "c=ConfigObj('/data/sabnzbd/sabnzbd.ini');"
+        "c['misc']['start_paused']=True;c.write()",
+    )
+    docker("restart", "--time", "15", app)
+    wait(lambda: is_state(app, "ready"), "restart honors native startup preference")
+    assert app_health(app) == 200
+    execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        sab_api + "assert call('queue')['queue']['paused'] is True",
+    )
     evidence = []
     for line in docker("logs", server).stdout.splitlines():
         try:
@@ -531,7 +610,13 @@ print(json.dumps(children))
         "up": up,
         "outage": down,
         "operator_pause_preserved": True,
+        "running_queue_preserved_across_tunnel_recovery": True,
+        "native_default_start_unpaused": True,
+        "native_start_paused_preserved_after_restart": True,
         "child_exit_stopped_downloader": True,
+        "terminal_failure_unhealthy": True,
+        "terminal_checks_invalidated": True,
+        "recoverable_states_remain_healthy": True,
         "separate_group_stopped_openvpn_killed_and_reaped": True,
         "cold_start_gated": True,
         "generated_data_root_ownership_verified": True,

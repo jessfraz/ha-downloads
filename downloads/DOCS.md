@@ -23,7 +23,9 @@ to configure Usenet servers, credentials, categories, and queues. Enable TLS
 and certificate verification for each Usenet server. Provider
 traffic stays inside the app's VPN namespace. SABnzbd owns its own API key and
 login; Downloads does not import a provider or library automatically. The queue
-starts paused on each app start. Resume it in SABnzbd when ready.
+uses SABnzbd's startup pause policy. Leave **Start paused** disabled and enable
+**Preserve paused state** to resume active downloads after a restart while
+retaining intentional pauses.
 
 Persistent SABnzbd configuration uses `/data/sabnzbd`. Place completed media
 under a chosen `/media` directory that is also mapped into the media manager.
@@ -46,8 +48,9 @@ proxy. Do not expose an unauthenticated proxy to a LAN or the internet.
 Status distinguishes missing configuration, startup, readiness, degradation,
 and shutdown. A running process alone does not prove a working tunnel, firewall,
 or DNS. A tunnel failure leaves Gluetun's firewall authoritative. An
-operator-paused queue remains paused across tunnel recovery. Starting the app
-again always starts the queue paused.
+operator-paused queue remains paused across tunnel recovery. After an app restart,
+SABnzbd's **Start paused** setting controls whether the queue resumes. Leave it
+disabled for automatic recovery. Protection checks must pass before SABnzbd starts.
 
 Use Home Assistant to update the entire app. Gluetun, SABnzbd, Python packages,
 and the Rust supervisor are pinned and tested together; do not install packages
@@ -71,6 +74,13 @@ period and its duration after recovery. Counters and this in-memory history
 reset on app restart. Home Assistant's journal retains timestamped transition
 and recovery events according to its own log retention, including earlier app
 runs. View them in this app's **Logs** tab.
+
+If a protected service fails and cannot continue, the health endpoint returns
+HTTP 503 so Home Assistant's enabled watchdog can restart the app. Setup and
+recoverable tunnel outages remain healthy. Current checks are cleared after
+terminal shutdown; earlier check history remains available. Logs identify
+known failure reasons and include the final HTTP or transport result when
+downloader startup times out, without logging response bodies or URLs.
 
 VPN initialization, reconnection, and known upstream warnings/errors become
 fixed-message events. Unknown warnings use a generic code; unknown informational

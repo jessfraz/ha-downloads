@@ -2,7 +2,8 @@
 
 SABnzbd downloads through a Gluetun VPN, with connection status and the SABnzbd
 interface in Home Assistant's sidebar. The downloader waits for the VPN,
-firewall, and DNS checks to pass. The queue starts paused on each app start.
+firewall, and DNS checks to pass. SABnzbd's **Start paused** setting controls the
+queue after an app restart; its default allows downloads to resume automatically.
 
 The app uses NET_ADMIN, NET_RAW and `/dev/net/tun`. It does not use host networking,
 the Docker socket, Home Assistant's API, or Supervisor management APIs. Media
@@ -31,6 +32,9 @@ Open **Diagnostic details** in the panel for individual check results and the
 most recent failed-check period, including after recovery. A stopped VPN
 service, a failed upstream health check, and an unavailable status request are
 reported separately.
+
+Enable Home Assistant's watchdog to restart the app after a terminal service
+failure. Setup and recoverable VPN outages do not trigger a restart.
 
 Home Assistant's app **Logs** tab records timestamped check changes, recovery
 durations, and allowlisted VPN lifecycle events and warnings. Raw upstream

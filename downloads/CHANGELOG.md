@@ -1,3 +1,13 @@
+# 0.1.5
+
+Report terminal service failures as unhealthy so Home Assistant's enabled
+watchdog can restart the app. Keep setup and recoverable VPN outages healthy.
+Clear current protection checks after services stop, retain their history, and
+log the fixed failure reason and final downloader startup probe result.
+Honor SABnzbd's Start paused setting instead of forcing the queue paused after
+every app restart. Start the downloader only after protection checks pass and
+preserve operator pauses during tunnel recovery.
+
 # 0.1.4
 
 Use fresh HTTP connections for local Gluetun probes to avoid reusing connections

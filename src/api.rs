@@ -1,4 +1,4 @@
-use crate::status::{DownloaderState, Status};
+use crate::status::{DownloaderState, State, Status};
 use dropshot::{
     ApiDescription, Body, ClientErrorStatusCode, ConfigDropshot, HttpError, HttpResponseOk,
     HttpServer, HttpServerStarter, Path, RequestContext, UntypedBody, endpoint,
@@ -127,8 +127,15 @@ fn prefix(r: &RequestContext<Arc<Context>>) -> Result<String, HttpError> {
 }
 #[endpoint {method=GET,path="/healthz",tags=["system"]}]
 async fn health(r: RequestContext<Arc<Context>>) -> Result<HttpResponseOk<Health>, HttpError> {
+    let status = r.context().status.borrow();
+    if status.state == State::Degraded && status.downloader.state == DownloaderState::Stopped {
+        return Err(HttpError::for_unavail(
+            None,
+            "The protection runtime stopped. Restart the app.".into(),
+        ));
+    }
     Ok(HttpResponseOk(Health {
-        state: r.context().status.borrow().state.clone(),
+        state: status.state.clone(),
     }))
 }
 #[derive(serde::Serialize, JsonSchema)]
@@ -520,6 +527,49 @@ mod http_tests {
     fn context(access: Access) -> Context {
         let (_, rx) = watch::channel(Status::needs_configuration("Configure the VPN."));
         Context::new(access, rx).expect("context")
+    }
+    #[tokio::test]
+    async fn health_reports_terminal_failure_without_restarting_recoverable_states() {
+        #[derive(Deserialize)]
+        struct HealthState {
+            state: State,
+        }
+        let (tx, rx) = watch::channel(Status::needs_configuration("Configure the VPN."));
+        let server = api::start(
+            listener(),
+            Arc::new(Context::new(Access::Direct { token_hash: None }, rx).expect("context")),
+        )
+        .expect("server");
+        let url = format!("http://{}/healthz", server.local_addr());
+        let client = client();
+        for (status, expected) in [
+            (
+                Status::needs_configuration("Configure the VPN."),
+                StatusCode::OK,
+            ),
+            (Status::starting("test"), StatusCode::OK),
+            (Status::ready("test", None, true, true), StatusCode::OK),
+            (
+                Status::degraded("test", "The tunnel is reconnecting.", true),
+                StatusCode::OK,
+            ),
+            (Status::stopping("test"), StatusCode::OK),
+            (
+                Status::degraded("test", "The protection runtime stopped.", false),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (Status::ready("test", None, true, true), StatusCode::OK),
+        ] {
+            let state = status.state.clone();
+            tx.send_replace(status);
+            let response = client.get(&url).send().await.expect("health response");
+            assert_eq!(response.status(), expected, "health for {state:?}");
+            if expected == StatusCode::OK {
+                let body: HealthState = response.json().await.expect("health state");
+                assert_eq!(body.state, state);
+            }
+        }
+        server.close().await.expect("close");
     }
     #[tokio::test]
     async fn real_listeners_enforce_ingress_peer_admin_and_direct_token() {

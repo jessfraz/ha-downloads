@@ -202,8 +202,13 @@ pub(crate) fn unix_ms() -> u64 {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum LifecycleEvent {
     StatusPersistenceFailed,
-    ProtectionServiceFailed,
+    ProtectionServiceFailed {
+        reason: Option<ServiceFailure>,
+    },
     ProtectionTaskStopped,
+    DownloaderReadinessTimedOut {
+        last_probe: Check,
+    },
     VpnProcessExited {
         exit_code: Option<i32>,
         signal: Option<i32>,
@@ -212,6 +217,21 @@ pub enum LifecycleEvent {
         exit_code: Option<i32>,
         signal: Option<i32>,
     },
+}
+/// Fixed failure reasons may cross the logging boundary; raw service errors may not.
+#[derive(Clone, Copy, Debug, Serialize, thiserror::Error)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceFailure {
+    #[error("VPN service exited. Downloads have been stopped.")]
+    VpnExited,
+    #[error("Downloader exited unexpectedly. Downloads have been stopped.")]
+    DownloaderExited,
+    #[error("VPN protection checks did not pass before startup timed out.")]
+    VpnNotReady,
+    #[error("Downloader startup timed out. Downloads are stopped.")]
+    DownloaderNotReady,
+    #[error("Protection checks failed. Downloads have been stopped.")]
+    ProtectionChecksFailed,
 }
 pub fn log_lifecycle(event: LifecycleEvent) {
     #[derive(Serialize)]

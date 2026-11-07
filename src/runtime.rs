@@ -1,9 +1,9 @@
 //! Own both process groups. SAB stops before Gluetun can remove its protections.
 use crate::{
     config::Config,
-    monitor::{LifecycleEvent, Outcome, Tracker, log_lifecycle},
+    monitor::{Check, LifecycleEvent, Outcome, ServiceFailure, Tracker, log_lifecycle},
     status::{DownloaderState, Status, Verification, VpnState},
-    vpn::{PRIVATE_DIR, Probe, Protection, Secrets},
+    vpn::{PRIVATE_DIR, Probe, Protection, Secrets, request_failure},
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{
@@ -224,7 +224,7 @@ impl Children {
                 exit_code: exit.code(),
                 signal: exit.signal(),
             });
-            bail!("VPN service exited. Downloads have been stopped.")
+            return Err(ServiceFailure::VpnExited.into());
         }
         if let Some(sab) = self.downloader.as_mut()
             && let Some(exit) = sab.exited()?
@@ -233,7 +233,7 @@ impl Children {
                 exit_code: exit.code(),
                 signal: exit.signal(),
             });
-            bail!("Downloader exited unexpectedly.")
+            return Err(ServiceFailure::DownloaderExited.into());
         }
         Ok(())
     }
@@ -260,7 +260,7 @@ impl Children {
                 break;
             }
             if Instant::now() >= deadline {
-                bail!("VPN protection checks did not pass. Downloads remain stopped.")
+                return Err(ServiceFailure::VpnNotReady.into());
             }
             tokio::select! { _ = shutdown.changed() => return Ok(()), _ = sleep(Duration::from_secs(1)) => {} }
         }
@@ -276,7 +276,6 @@ impl Children {
             "--server",
             "127.0.0.1:8081",
             "--console",
-            "--pause",
             "--disable-file-log",
         ])
         .env_clear()
@@ -293,7 +292,7 @@ impl Children {
         self.downloader = Some(OwnedProcess::spawn(sab)?);
         let mut starting = Status::starting(&config.vpn.provider);
         starting.downloader.state = DownloaderState::Starting;
-        starting.downloader.paused = Some(true);
+        starting.downloader.paused = None;
         status.send_replace(starting);
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -306,18 +305,33 @@ impl Children {
             let diagnostics = tracker.observe(protection.checks);
             status.send_modify(|value| value.diagnostics = diagnostics);
             if !protection.firewall() || !protection.dns_safe() {
-                bail!("Protection checks failed. Downloads have been stopped.")
+                return Err(ServiceFailure::ProtectionChecksFailed.into());
             }
-            if client
+            let started = std::time::Instant::now();
+            let check = match client
                 .get("http://127.0.0.1:8081/sabnzbd/api?mode=version&output=json")
                 .send()
                 .await
-                .is_ok_and(|r| r.status().is_success())
             {
+                Ok(response) => Check {
+                    http_status: Some(response.status().as_u16()),
+                    ..Check::measured(
+                        if response.status().is_success() {
+                            Outcome::Passed
+                        } else {
+                            Outcome::HttpError
+                        },
+                        started,
+                    )
+                },
+                Err(error) => request_failure(&error, started),
+            };
+            if check.passed() {
                 break;
             }
             if Instant::now() >= deadline {
-                bail!("Downloader did not become ready.")
+                log_lifecycle(LifecycleEvent::DownloaderReadinessTimedOut { last_probe: check });
+                return Err(ServiceFailure::DownloaderNotReady.into());
             }
             tokio::select! { _ = shutdown.changed() => return Ok(()), _ = sleep(Duration::from_secs(1)) => {} }
         }
@@ -327,7 +341,7 @@ impl Children {
             let diagnostics = tracker.observe(protection.checks);
             status.send_modify(|value| value.diagnostics = diagnostics);
             if !protection.firewall() || !protection.dns_safe() {
-                bail!("Protection checks failed. Downloads have been stopped.")
+                return Err(ServiceFailure::ProtectionChecksFailed.into());
             }
             publish(status, &config.vpn.provider, protection, &probe).await;
             tokio::select! { _ = shutdown.changed() => return Ok(()), _ = sleep(Duration::from_secs(3)) => {} }
@@ -427,7 +441,7 @@ async fn publish(
     } else {
         Verification::Failed
     };
-    // Runtime never sends SAB a resume command. Each cold start is paused; its UI owns later changes.
+    // SAB owns its startup pause policy. Tunnel recovery never overrides a user-paused queue.
     sender.send_replace(status);
 }
 
@@ -471,12 +485,23 @@ pub async fn run(
     let cleanup = children.stop().await;
     drop(secrets);
     if result.is_err() || cleanup.is_err() {
-        let mut failed = Status::degraded(
-            &config.vpn.provider,
-            "A protected service failed. Downloads are stopped; check the app logs and restart.",
-            false,
-        );
+        let message = if cleanup.is_err() {
+            "Protected services could not be fully stopped. Restart the app.".into()
+        } else if let Some(reason) = result
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<ServiceFailure>())
+        {
+            reason.to_string()
+        } else {
+            "A protected service failed. Downloads are stopped; check the app logs and restart."
+                .into()
+        };
+        let mut failed = Status::degraded(&config.vpn.provider, &message, false);
         failed.diagnostics = diagnostics;
+        // These checks describe services that have now been stopped, not current protection.
+        failed.diagnostics.checks = Default::default();
+        failed.diagnostics.checked_at_unix_ms = None;
         if cleanup.is_ok() {
             failed.vpn.state = VpnState::Disconnected;
         }
