@@ -10,6 +10,7 @@ HA masks passwords, WireGuard private keys, and `api_token` in the app form.
 These options and SABnzbd's configuration are sensitive persistent `/data`
 contents, including in cold backups. Use Home Assistant's encrypted backups and
 protect exported copies. Runtime VPN secret files belong in `/run/downloads`.
+The `media` connection keys and role tokens are also masked and sensitive.
 
 `network.local_subnets` allows narrowly scoped local app/API traffic to bypass
 the tunnel. The default is Home Assistant's internal app network. Never add the
@@ -42,6 +43,49 @@ Gluetun's HTTP CONNECT proxy listens internally on port 8888. Its host mapping
 is also off by default. Configure only trusted internal applications to use it
 for external indexer requests; keep local application API calls out of the
 proxy. Do not expose an unauthenticated proxy to a LAN or the internet.
+
+## Movie and TV requests
+
+Set `media.radarr.url` and/or `media.sonarr.url` to reachable native manager
+origins, with their native API keys. Optional base paths are supported. Do not
+use a Home Assistant ingress URL. Local destinations must be inside the narrow
+`network.local_subnets` exceptions; literal IPs in those exceptions remain
+reachable without the VPN. Hostnames and external manager traffic require
+current protection checks before lookup or connection, and stay subject to
+the VPN firewall. Optional `media.prowlarr` and `media.plex` connections add
+health observations, not a prerequisite for every request.
+
+In the Downloads sidebar, create saved profiles from the manager's actual
+quality profiles, roots and tags. A request pins the selected profile revision
+and exact movie/TV identity. Selected-season requests exclude specials unless
+explicitly selected, future episodes and episodes already imported. Existing
+native quality/root settings are preserved; conflicts need a deliberate profile
+selection, not a hidden overwrite. Future monitoring is a separate saved TV
+policy, defaulting off.
+
+All authenticated HA users can read the sidebar. HA administrators can request
+and edit saved profiles. Add non-admin HA user IDs to
+`media.requester_user_ids` only when they should be able to request media.
+The SABnzbd browser/settings remain administrator-only.
+
+For native CLI/API access, set independent, distinct role credentials of at
+least 32 characters: `api_token` is read-only, `media.request_token` permits
+requests, and `media.admin_token` permits saved-profile writes. The dedicated
+`media.integration_token` is only for the optional HA companion. It cannot edit
+profiles or access SABnzbd. Never reuse a HA token or manager key as a role token.
+
+Install the [native companion](../integration/README.md) through HACS/manual
+custom integration, then confirm discovery or pair the native app origin.
+Requests default off in its options. Assist additionally requires exposing the
+Downloads stack health entity to the assistant. No separate LLM API is needed.
+The [CLI](../docs/cli.md) can use native or HA transport with caller-owned keys.
+
+Health shows individual components, observation freshness and operation-specific
+readiness. Optional components can be unavailable while requesting still works.
+An accepted/applied request does not claim downloaded, imported or playable.
+If acknowledgement is lost, recover by its original key before another request.
+Do not delete `/data/media` to resolve uncertain work. The private journal holds
+the receipts and checkpoints needed to prevent duplicate native writes.
 
 ## Startup, failures and updates
 

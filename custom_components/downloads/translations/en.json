@@ -4,29 +4,126 @@
     "step": {
       "user": {
         "title": "Connect Downloads",
-        "description": "Select the installed Downloads app. Only connection health is exposed; this integration cannot change the VPN or download queue.",
+        "menu_options": {
+          "app": "Pair the Home Assistant app",
+          "standalone": "Enter a native service origin",
+          "health": "Monitor the installed app health without credentials"
+        }
+      },
+      "app": {
+        "title": "Find the Downloads app",
+        "description": "Start the Downloads app, then try again."
+      },
+      "standalone": {
+        "title": "Connect Downloads",
+        "description": "Use the native service origin and its dedicated integration token, never an ingress URL or a Home Assistant token.",
+        "data": {
+          "backend_url": "Native service origin",
+          "integration_token": "Integration token"
+        }
+      },
+      "hassio_confirm": {
+        "title": "Pair Downloads",
+        "description": "Connect to the discovered Downloads app. Media requests stay disabled until enabled in the integration options."
+      },
+      "reauth_confirm": {
+        "title": "Reconnect Downloads",
+        "data": {
+          "backend_url": "Native service origin",
+          "integration_token": "Integration token"
+        }
+      },
+      "health": {
+        "title": "Connect Downloads health",
+        "description": "Select the installed Downloads app. This read-only health connection needs no address or token. Media pairing can be added later through Reconfigure.",
         "data": {
           "addon_slug": "Downloads app"
         }
       }
     },
     "error": {
-      "app_not_found": "Select an installed Downloads app.",
-      "cannot_connect": "Downloads health could not be read. Update and start the app, then try again."
+      "app_not_found": "No Downloads app discovery was found.",
+      "supervisor_required": "App pairing requires Home Assistant Supervisor. Use a native origin instead.",
+      "supervisor_unavailable": "Cannot read app discovery from Supervisor.",
+      "multiple_apps": "More than one Downloads app was discovered.",
+      "invalid_auth": "The service rejected this credential.",
+      "integration_required": "Use a dedicated Downloads integration token, not a read-only, requester, or administrator token.",
+      "invalid_url": "Enter one HTTP(S) origin without credentials, a path, query, or fragment.",
+      "cannot_connect": "Cannot validate the Downloads connection."
     },
     "abort": {
-      "already_configured": "Downloads is already configured.",
       "single_instance_allowed": "Downloads is already configured.",
-      "supervisor_required": "This integration requires Home Assistant Supervisor.",
+      "invalid_discovery": "The app discovery information is invalid.",
+      "already_configured": "This Downloads app is already configured.",
+      "reauth_successful": "Downloads reconnected.",
+      "supervisor_required": "Native app health requires Home Assistant Supervisor.",
       "supervisor_unavailable": "Supervisor could not be reached. Try again later.",
-      "app_not_found": "Install the Downloads app before adding this integration."
+      "app_not_found": "Install and start the Downloads app before adding its health connection.",
+      "unique_id_mismatch": "The discovered app is not the app already paired to this entry.",
+      "reconfigure_successful": "Downloads media pairing updated. Existing health identity and exposure were preserved."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Media request access",
+        "description": "Allow permitted HA users and automations to submit media requests. Assist also requires explicit exposure of the Downloads stack health entity. No profile administration, deletion, release overrides, or VPN controls are exposed.",
+        "data": {
+          "allow_requests": "Allow media requests"
+        }
+      }
+    },
+    "abort": {
+      "media_not_paired": "Use Reconfigure on the Downloads integration to pair media features first. Native health continues without media credentials."
     }
   },
   "entity": {
+    "sensor": {
+      "stack_health": {
+        "name": "Stack health",
+        "state": {
+          "healthy": "Healthy",
+          "degraded": "Degraded",
+          "unavailable": "Unavailable",
+          "not_configured": "Not configured",
+          "stale": "Stale",
+          "unknown": "Unknown"
+        }
+      }
+    },
     "binary_sensor": {
+      "request_movie_ready": {
+        "name": "Movie requests ready"
+      },
+      "request_series_ready": {
+        "name": "TV requests ready"
+      },
+      "transfer_ready": {
+        "name": "Transfers ready"
+      },
+      "import_movie_ready": {
+        "name": "Movie imports ready"
+      },
+      "import_series_ready": {
+        "name": "TV imports ready"
+      },
       "problem": {
         "name": "Problem"
       }
+    }
+  },
+  "services": {
+    "search": {
+      "name": "Search media",
+      "description": "Resolve titles to canonical IDs and saved profile references without requesting a download."
+    },
+    "request": {
+      "name": "Request media",
+      "description": "Submit the exact movie or TV request with a caller-owned idempotency key. Acceptance is not download completion."
+    },
+    "status": {
+      "name": "Read media status",
+      "description": "Read a request, original idempotency key, movie, or TV status without retrying a write."
     }
   }
 }

@@ -1,143 +1,157 @@
-"""Exercise the CLI health bridge through HA's real authentication middleware."""
+"""Real HA HTTP authentication, route boundaries and authenticated attribution."""
 
-from pathlib import Path
+import json
 
 import pytest
-from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockUser
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components.downloads import DownloadsConfigEntry
+from custom_components.downloads.const import (
+    CONF_ALLOW_REQUESTS,
+    MAX_REQUEST_BYTES,
+    MAX_RESPONSE_BYTES,
+)
 
-URL = "/api/downloads/health"
-ENTITY = "binary_sensor.downloads_problem"
+from .conftest import KEY, MOVIE_REQUEST, Backend
+
+PREFIX = "/api/downloads/v1"
 
 
-async def test_http_health_requires_auth_and_read_permission_without_assist_exposure(
-    hass: HomeAssistant,
-    entry: DownloadsConfigEntry,
+async def test_bridge_auth_and_request_actor_cannot_be_forged(
     hass_client: ClientSessionGenerator,
-    hass_read_only_access_token: str,
-    aioclient_mock: AiohttpClientMocker,
+    hass_user_token: str,
+    hass_user: MockUser,
+    entry: DownloadsConfigEntry,
+    backend: Backend,
 ) -> None:
     anonymous = await hass_client(None)
-    assert (await anonymous.get(URL)).status == 401
-    client = await hass_client(hass_read_only_access_token)
-    calls = aioclient_mock.call_count
-    response = await client.get(URL)
-    assert response.status == 200
-    assert response.headers["Cache-Control"] == "no-store"
-    data = await response.json()
-    assert data["ready"] is True
-    assert set(data) == {
-        "ready",
-        "state",
-        "reasons",
-        "checked_at_unix_ms",
-        "age_ms",
-        "max_age_ms",
-    }
-    assert aioclient_mock.call_count == calls
-    assert (await client.get(URL + "?url=http://untrusted.example")).status == 400
-    assert (await client.post(URL)).status == 405
-    denied = MockUser().add_to_hass(hass)
-    refresh = await hass.auth.async_create_refresh_token(
-        denied, client_id="https://example.invalid"
+    assert (await anonymous.get(f"{PREFIX}/search?query=Example")).status == 401
+    client = await hass_client(hass_user_token)
+    response = await client.post(
+        f"{PREFIX}/requests",
+        json=MOVIE_REQUEST,
+        headers={
+            "Idempotency-Key": KEY,
+            "X-Downloads-Actor-Id": "forged",
+            "X-Downloads-Actor-Can-Request": "false",
+            "X-Downloads-Admin": "true",
+        },
     )
-    token = hass.auth.async_create_access_token(refresh)
-    denied_client = await hass_client(token)
-    response = await denied_client.get(URL)
-    assert response.status == 403
-    assert await response.json() == {"error": "permission_denied"}
+    assert response.status == 202
+    write = next(item for item in backend.requests if item.method == "POST")
+    assert write.headers["Authorization"] == "Bearer test-integration-token"
+    assert write.headers["X-Downloads-Actor-Id"] == hass_user.id
+    assert write.headers["X-Downloads-Actor-Can-Request"] == "true"
+    assert "X-Downloads-Admin" not in write.headers
+    assert write.headers["Idempotency-Key"] == KEY
+    assert json.loads(write.body) == MOVIE_REQUEST
+    assert response.headers["Location"].startswith(f"{PREFIX}/requests/")
 
 
-async def test_http_health_ages_cached_data_and_rejects_unloaded_entry(
-    hass: HomeAssistant,
-    entry: DownloadsConfigEntry,
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("put", "profiles/276319ec-c797-460c-a49e-6b90fc1f6ae8"),
+        ("post", "profiles"),
+        ("get", "sabnzbd/api"),
+        ("post", "vpn/stop"),
+        ("get", "../system"),
+        ("get", "managers/radarr/credentials"),
+    ],
+)
+async def test_no_admin_or_generic_proxy_routes(
     hass_client: ClientSessionGenerator,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async_expose_entity(hass, "conversation", ENTITY, True)
-    client = await hass_client()
-    await entry.runtime_data.async_shutdown()
-    observed_at = entry.runtime_data.data.received_at
-    monkeypatch.setattr(
-        "custom_components.downloads.coordinator.monotonic", lambda: observed_at + 35
-    )
-    response = await client.get(URL)
-    assert response.status == 200
-    data = await response.json()
-    assert data["ready"] is False
-    assert "checks_stale" in data["reasons"]
-    assert await hass.config_entries.async_unload(entry.entry_id)
-    response = await client.get(URL)
-    assert response.status == 503
-    assert await response.json() == {"error": "unavailable"}
-
-
-async def test_real_cli_reads_native_ha_bridge_with_honest_exit_status(
-    hass: HomeAssistant,
+    hass_user_token: str,
     entry: DownloadsConfigEntry,
-    hass_client: ClientSessionGenerator,
-    hass_read_only_access_token: str,
-    monkeypatch: pytest.MonkeyPatch,
-    socket_enabled: None,
-    downloads_cli_binary: Path,
+    backend: Backend,
+    method: str,
+    path: str,
 ) -> None:
-    """Run the actual Rust client against Core's authenticated HTTP listener."""
-    import asyncio
-    import json
-    import os
+    client = await hass_client(hass_user_token)
+    count = len(backend.requests)
+    response = await client.request(method, f"{PREFIX}/{path}")
+    assert response.status in {404, 405}
+    assert len(backend.requests) == count
 
-    client = await hass_client(hass_read_only_access_token)
-    environment = dict(os.environ)
-    environment.update(
-        {
-            "HOME_ASSISTANT_URL": str(client.make_url("/")),
-            "HOME_ASSISTANT_TOKEN": hass_read_only_access_token,
-            "HTTP_PROXY": "http://127.0.0.1:1",
-            "HTTPS_PROXY": "http://127.0.0.1:1",
-            "ALL_PROXY": "http://127.0.0.1:1",
-            "NO_PROXY": "",
-        }
-    )
-    environment["DOWNLOADS_URL"] = "https://unused.example.invalid"
-    environment["DOWNLOADS_TOKEN_FILE"] = "/unused/native-token"
 
-    async def query() -> tuple[int, dict[str, object]]:
-        process = await asyncio.create_subprocess_exec(
-            str(downloads_cli_binary),
-            "--transport",
-            "home-assistant",
-            "status",
-            env=environment,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+async def test_invalid_write_and_duplicate_query_never_reach_backend(
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    entry: DownloadsConfigEntry,
+    backend: Backend,
+) -> None:
+    client = await hass_client(hass_user_token)
+    count = len(backend.requests)
+    invalid = {**MOVIE_REQUEST, "tvdb_id": 12}
+    assert (
+        await client.post(f"{PREFIX}/requests", json=invalid, headers={"Idempotency-Key": KEY})
+    ).status == 400
+    assert (await client.get(f"{PREFIX}/search?query=Example&query=Other")).status == 400
+    assert len(backend.requests) == count
+
+
+async def test_request_opt_in_is_checked_each_time(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    entry: DownloadsConfigEntry,
+    backend: Backend,
+) -> None:
+    client = await hass_client(hass_user_token)
+    hass.config_entries.async_update_entry(entry, options={CONF_ALLOW_REQUESTS: False})
+    count = len(backend.requests)
+    assert (
+        await client.post(
+            f"{PREFIX}/requests", json=MOVIE_REQUEST, headers={"Idempotency-Key": KEY}
         )
-        stdout, stderr = await process.communicate()
-        assert hass_read_only_access_token.encode() not in stdout + stderr
-        assert process.returncode is not None
-        return process.returncode, json.loads(stdout or stderr)
+    ).status in {403, 503}
+    assert not any(item.method == "POST" for item in backend.requests[count:])
+    await hass.async_block_till_done()
 
-    code, result = await query()
-    assert code == 0
-    assert result["transport"] == "home-assistant"
-    assert isinstance(result["health"], dict)
-    assert result["health"]["ready"] is True
-    await entry.runtime_data.async_shutdown()
-    observed_at = entry.runtime_data.data.received_at
-    monkeypatch.setattr(
-        "custom_components.downloads.coordinator.monotonic", lambda: observed_at + 35
+
+async def test_unknown_upstream_error_is_sanitized_without_retry(
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    entry: DownloadsConfigEntry,
+    backend: Backend,
+) -> None:
+    backend.responses[("GET", "/api/v1/search")] = (
+        500,
+        {
+            "error_code": "PRIVATE-TOKEN",
+            "message": "https://secret.invalid/private?token=PRIVATE-TOKEN",
+        },
     )
-    code, result = await query()
-    assert code == 2
-    assert isinstance(result["health"], dict)
-    assert result["health"]["ready"] is False
-    assert "checks_stale" in result["health"]["reasons"]
-    assert await hass.config_entries.async_unload(entry.entry_id)
-    code, result = await query()
-    assert code == 1
-    assert result["error"] == "unavailable"
-    assert result["http_status"] == 503
+    client = await hass_client(hass_user_token)
+    count = len(backend.requests)
+    response = await client.get(f"{PREFIX}/search?query=Example")
+    assert response.status == 500
+    assert "PRIVATE-TOKEN" not in await response.text()
+    assert len(backend.requests) == count + 1
+
+
+async def test_body_limits_and_redirects_fail_without_retry(
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    entry: DownloadsConfigEntry,
+    backend: Backend,
+) -> None:
+    client = await hass_client(hass_user_token)
+    count = len(backend.requests)
+    oversized = b"x" * (MAX_REQUEST_BYTES + 1)
+    assert (await client.post(f"{PREFIX}/requests", data=oversized)).status == 413
+    assert len(backend.requests) == count
+    backend.responses[("GET", "/api/v1/search")] = (302, {"message": "private"})
+    backend.response_headers[("GET", "/api/v1/search")] = {
+        "Location": backend.url + "/api/v1/system"
+    }
+    assert (await client.get(f"{PREFIX}/search?query=Example")).status == 502
+    assert len(backend.requests) == count + 1
+    backend.responses[("GET", "/api/v1/search")] = (
+        200,
+        {"items": ["x" * MAX_RESPONSE_BYTES]},
+    )
+    assert (await client.get(f"{PREFIX}/search?query=Example")).status == 502
+    assert len(backend.requests) == count + 2

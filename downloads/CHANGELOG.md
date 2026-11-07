@@ -1,3 +1,10 @@
+# 0.2.0
+
+Search and request movies or exact TV seasons with saved Radarr/Sonarr profiles
+in the Downloads sidebar. Add typed media APIs, durable request recovery,
+component health, native Assist tools, and CLI media commands. Keep existing
+health, status, problem sensor, and CLI contracts compatible.
+
 # 0.1.7
 
 Match SABnzbd's required native decoder version and check its actual native

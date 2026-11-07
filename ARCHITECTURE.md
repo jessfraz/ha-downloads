@@ -2,11 +2,13 @@
 
 Downloads is a Home Assistant app that runs SABnzbd behind Gluetun in the same
 private container network namespace. A small Rust service owns configuration,
-process lifecycle, status, and authenticated ingress. Gluetun owns the VPN,
+process lifecycle, status, media requests, and authenticated ingress. Gluetun owns the VPN,
 firewall kill switch, and DNS. No custom VPN protocol or firewall is implemented.
 
 The app never uses host networking, the Docker socket, host PID/IPC namespaces,
-Home Assistant's API, or Supervisor management APIs. NET_ADMIN and NET_RAW apply only to
+Home Assistant's API, or Supervisor management APIs. The scoped Supervisor
+`addons/self/info` and discovery endpoints announce only the companion origin
+and dedicated integration credential. NET_ADMIN and NET_RAW apply only to
 this app's namespace. NET_RAW supports Gluetun's ICMP health checks. Persistent state belongs in `/data`; media uses the normal
 Home Assistant `/media` mapping. No physical installation details or credentials
 belong in this repository.
@@ -37,8 +39,9 @@ belong in this repository.
 - Rust binary: `downloads serve` (default), `downloads doctor`, `downloads openapi`.
   Use clap derives. Serve reads `/data/options.json` by default. Doctor reports
   sanitized status in JSON; no token or password appears in command arguments.
-- Ingress: port 8099, trusted HA ingress peer only. Admin panel status/setup and
-  an embedded/proxied SABnzbd interface. Public origin examples use `.example`.
+- Ingress: port 8099, trusted HA ingress peer and authenticated HA identity.
+  Read access is separate from allowlisted requesting and administrator access.
+  The embedded/proxied SABnzbd browser remains administrator-only.
 - Optional direct API: port 8080, no host mapping by default. `/api/v1/status`
   requires a bearer token; SABnzbd API routes retain its own API-key validation.
 - SABnzbd reverse proxy: `/sabnzbd/…` to loopback port 8081, preserving query,
@@ -54,6 +57,39 @@ belong in this repository.
 - Read-only client: `ha-downloads --transport home-assistant status` uses the
   existing HA credential environment. Native status can use a token file or
   the app's local snapshot. The client binary cannot start services.
+- Media: typed `/api/v1` resources documented in
+  [the media contract](docs/media-contract.md). Native manager clients use fixed
+  configured origins, bounded responses, no redirects or automatic retries.
+  Only literal IPs in validated local bypass subnets (or loopback) can be used
+  before protection is fresh. Hostname lookup and external requests are gated
+  before credentials can leave the process. No configured remote manager can
+  bypass this boundary when VPN configuration is missing or startup is pending.
+- CLI: separate `ha-downloads` binary, without daemon startup or implicit
+  provider credentials. One call/page per command.
+- Optional HA companion: config entries, cached health entities, native actions,
+  scoped Assist tools, and fixed read/request bridge. No second scheduler or
+  library mirror. Request opt-in and Assist exposure remain HA-owned.
+
+## Durable media requests
+
+Saved profiles and actor-scoped receipts use a versioned private journal under
+`/data/media`. Writes sync a temporary file, atomically rename, then sync the
+directory before acknowledging. An invalid journal disables media features;
+it is never reset or replaced with an empty store. Native HA cold backups cover
+this state. Receipts are bounded and never silently pruned.
+
+Acceptance validates canonical identity, native profile/root/tag relationships
+and saves immutable settings before any native effect. Checkpoints precede
+add, episode-monitoring and search writes. Ambiguous effects are reconciled by
+canonical library/command readback, never repeated merely because a request
+timed out or the app restarted. Selected aired, missing episode IDs are frozen;
+no full-series update can overwrite unrelated native settings.
+
+Background health is cached with observation and expiry times. GET does not
+refresh evidence timestamps. Readiness is operation/profile scoped; optional
+Plex and Prowlarr are not universal dependencies. Request readiness does not
+claim transfer or import readiness. Imports additionally need current staging
+and destination observations. The watchdog remains local and independent.
 
 ## Frontend status contract
 

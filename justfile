@@ -16,20 +16,20 @@ packaging:
     actionlint
     shellcheck scripts/container-smoke.sh scripts/network-test.sh
 
-home-assistant:
-    cargo build --locked --bin ha-downloads
-    uv sync --project integration --frozen --only-group dev
-    uv run --project integration --frozen --only-group dev ruff check --config integration/pyproject.toml custom_components tests_ha
-    uv run --project integration --frozen --only-group dev ruff format --check --config integration/pyproject.toml custom_components tests_ha
-    PYTHONPATH=. uv run --project integration --frozen --only-group dev pytest -c integration/pyproject.toml tests_ha
-
-check: rust packaging home-assistant
+check: rust packaging ha
 
 test: check
 
 web:
     node --check web/app.js
-    node --test tests_web/panel.mjs
+    node --test tests_web/panel.mjs tests_web/media.mjs
+
+ha:
+    cargo build --locked --bin ha-downloads
+    DOWNLOADS_TEST_BINARY="$PWD/target/debug/ha-downloads" uv run --project integration --frozen pytest -q -c integration/pyproject.toml tests_ha
+    uv run --project integration --frozen ruff check --config integration/pyproject.toml custom_components/downloads tests_ha
+    uv run --project integration --frozen ruff format --check --config integration/pyproject.toml custom_components/downloads tests_ha
+    HA_DOWNLOADS_TEST_PYTHON="$PWD/integration/.venv/bin/python" cargo test --locked --lib media::tests::real_home_assistant_bridge_uses_live_rust_contract -- --ignored --nocapture
 
 security:
     cargo deny --config .github/deny.toml check advisories licenses sources

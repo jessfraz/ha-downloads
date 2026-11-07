@@ -67,6 +67,22 @@ async function panel(t, initialStatus = readyStatus(), options = {}) {
   const fixture = { status: initialStatus, httpStatus: 200, requests: 0, handle: null, paths: [], errors: [] };
   page.on("pageerror", (error) => fixture.errors.push(error.message));
   page.on("request", (request) => fixture.paths.push(new URL(request.url()).pathname));
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname.split("api/v1/")[1];
+    const now = Date.now();
+    const coverage = [{ source: "radarr", state: "available", observed_at_unix_ms: now }, { source: "sonarr", state: "available", observed_at_unix_ms: now }];
+    const responses = {
+      system: { version: "0.1.5", capabilities: { read: true, request: true, admin: true }, transport: "ingress", credential_role: "administrator" },
+      profiles: { items: [] },
+      "health/stack": { generated_at_unix_ms: now, components: [], readiness: [{ operation: "transfer", profile_id: null, state: "ready", reasons: [], expires_at_unix_ms: now + 60000 }] },
+      "managers/radarr/options": { manager: "radarr", quality_profiles: [], root_folders: [], tags: [], series_types: [] },
+      "managers/sonarr/options": { manager: "sonarr", quality_profiles: [], root_folders: [], tags: [], series_types: [] },
+      movies: { items: [], next_page: null, coverage }, series: { items: [], next_page: null, coverage },
+      queue: { items: [], next_page: null, coverage }, requests: { items: [], next_page: null, coverage },
+    };
+    if (!(path in responses)) return route.fallback();
+    await route.fulfill({ json: responses[path] });
+  });
   await page.route("**/api/v1/status", async (route) => {
     fixture.requests++;
     assert.equal(route.request().url(), `${base}api/v1/status`);
@@ -75,6 +91,11 @@ async function panel(t, initialStatus = readyStatus(), options = {}) {
     await route.fulfill({ status: fixture.httpStatus, json: fixture.status });
   });
   await page.goto(base);
+  await page.waitForFunction(() => document.getElementById("connection-title").textContent !== "Checking your connection");
+  if (!await page.locator("#stack-health-panel").isVisible()) await page.getByRole("button", { name: /Download stack/ }).click();
+  if (!await page.locator(".protection-details").evaluate((element) => element.open)) await page.getByText("VPN and connection details", { exact: true }).click();
+  await page.locator("#advanced-downloads").waitFor({ state: "visible" });
+  await page.locator("#advanced-downloads > summary").click();
   return { page, fixture };
 }
 
@@ -312,8 +333,7 @@ test("mobile, dark mode, reduced motion, and keyboard controls remain usable", a
   const { page, fixture } = await panel(t, setupStatus(), { viewport: { width: 360, height: 800 }, colorScheme: "dark", reducedMotion: "reduce" });
   await heading(page, "Set up your VPN");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
-  await page.keyboard.press("Tab");
-  assert.equal(await page.getByRole("link", { name: "Downloads home" }).evaluate((element) => element === document.activeElement), true);
+  await page.getByRole("link", { name: "Downloads home" }).focus();
   await page.keyboard.press("Tab");
   assert.equal(await page.getByRole("button", { name: "Refresh status" }).evaluate((element) => element === document.activeElement), true);
   const before = fixture.requests;
@@ -342,6 +362,9 @@ test("ingress follows Home Assistant theme changes independently of the system t
   const { page } = await panel(t, setupStatus(), { colorScheme: "light" });
   await page.goto(`${base}theme-host/`);
   const ingress = page.frameLocator("iframe[title='Downloads ingress']");
+  await ingress.locator("#connection-title").filter({ hasText: "Set up your VPN" }).waitFor({ state: "attached" });
+  if (!await ingress.locator("#stack-health-panel").isVisible()) await ingress.getByRole("button", { name: /Download stack/ }).click();
+  if (!await ingress.locator(".protection-details").evaluate((element) => element.open)) await ingress.getByText("VPN and connection details", { exact: true }).click();
   await ingress.getByRole("heading", { name: "Set up your VPN" }).waitFor({ state: "visible" });
   const root = ingress.locator("html");
   assert.equal(await root.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(18, 27, 36)");
@@ -387,4 +410,18 @@ test("terminal service failures preserve their specific recovery message", async
   await heading(page, "Downloads stopped");
   assert.equal(await page.locator("#connection-message").innerText(), status.message);
   assert.equal(await page.locator("iframe").count(), 0);
+});
+
+test("collapsed connection details do not silence announcements and setup guidance opens itself", async (t) => {
+  const { page, fixture } = await panel(t);
+  await page.reload();
+  await page.getByRole("button", { name: "Download stack healthy", exact: true }).waitFor();
+  await page.locator("#connection-title").filter({ hasText: "Connected and protected" }).waitFor({ state: "attached" });
+  assert.equal(await page.locator("#stack-health-panel").isVisible(), false);
+  assert.equal(await page.getByRole("status").filter({ hasText: /Connected and protected/ }).count(), 1);
+  fixture.status = setupStatus();
+  await refresh(page);
+  await heading(page, "Set up your VPN");
+  assert.equal(await page.locator("#stack-health-toggle").getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator(".protection-details").evaluate((element) => element.open), true);
 });

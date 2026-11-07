@@ -11,6 +11,89 @@ pub struct Config {
     pub network: NetworkConfig,
     #[serde(deserialize_with = "secret")]
     pub api_token: Zeroizing<String>,
+    pub media: MediaConfig,
+}
+#[derive(Clone, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaConfig {
+    pub radarr: MediaConnection,
+    pub sonarr: MediaConnection,
+    pub prowlarr: MediaConnection,
+    pub plex: MediaConnection,
+    #[serde(deserialize_with = "secret")]
+    pub request_token: Zeroizing<String>,
+    #[serde(deserialize_with = "secret")]
+    pub admin_token: Zeroizing<String>,
+    #[serde(deserialize_with = "secret")]
+    pub integration_token: Zeroizing<String>,
+    pub requester_user_ids: Vec<String>,
+}
+#[derive(Clone, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaConnection {
+    pub url: String,
+    #[serde(deserialize_with = "secret")]
+    pub api_key: Zeroizing<String>,
+}
+impl fmt::Debug for MediaConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MediaConfig { credentials: [REDACTED] }")
+    }
+}
+impl fmt::Debug for MediaConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MediaConnection { credentials: [REDACTED] }")
+    }
+}
+impl MediaConfig {
+    pub fn validate(&self, status_token: &str) -> Result<(), ConfigError> {
+        let tokens = [
+            status_token,
+            &self.request_token,
+            &self.admin_token,
+            &self.integration_token,
+        ];
+        for (i, token) in tokens.iter().enumerate() {
+            if !token.is_empty()
+                && (token.len() < 32
+                    || token.len() > 4096
+                    || token.chars().any(char::is_control)
+                    || tokens[..i].iter().any(|other| other == token))
+            {
+                return Err(ConfigError::Media);
+            }
+        }
+        for connection in [&self.radarr, &self.sonarr, &self.prowlarr, &self.plex] {
+            if connection.url.is_empty() && connection.api_key.is_empty() {
+                continue;
+            }
+            let url = reqwest::Url::parse(&connection.url).map_err(|_| ConfigError::Media)?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || connection.api_key.is_empty()
+                || connection.api_key.chars().any(char::is_control)
+                || connection.api_key.len() > 4096
+            {
+                return Err(ConfigError::Media);
+            }
+        }
+        if self.requester_user_ids.len() > 100
+            || self.requester_user_ids.iter().any(|id| {
+                id.is_empty()
+                    || id.len() > 128
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            })
+        {
+            return Err(ConfigError::Media);
+        }
+        Ok(())
+    }
 }
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -54,6 +137,19 @@ impl Default for NetworkConfig {
         }
     }
 }
+impl NetworkConfig {
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+        for subnet in &self.local_subnets {
+            let IpNet::V4(net) = subnet else {
+                return Err(ConfigError::Subnet);
+            };
+            if !net.network().is_private() || !net.broadcast().is_private() {
+                return Err(ConfigError::Subnet);
+            }
+        }
+        Ok(())
+    }
+}
 fn secret<'de, D: Deserializer<'de>>(d: D) -> Result<Zeroizing<String>, D::Error> {
     String::deserialize(d).map(Zeroizing::new)
 }
@@ -77,6 +173,10 @@ pub enum ConfigError {
     Subnet,
     #[error("The optional status API token must contain at least 32 characters.")]
     Token,
+    #[error(
+        "Media connections need valid HTTP(S) URLs and credentials; API role tokens must be distinct and at least 32 characters."
+    )]
+    Media,
 }
 impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
@@ -97,6 +197,7 @@ impl Config {
             }
     }
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.media.validate(&self.api_token)?;
         if !self.vpn.provider.is_empty()
             && (!self
                 .vpn
@@ -139,14 +240,7 @@ impl Config {
                 return Err(ConfigError::Wireguard);
             }
         }
-        for subnet in &self.network.local_subnets {
-            let IpNet::V4(net) = subnet else {
-                return Err(ConfigError::Subnet);
-            };
-            if !net.network().is_private() || !net.broadcast().is_private() {
-                return Err(ConfigError::Subnet);
-            }
-        }
+        self.network.validate()?;
         if !self.api_token.is_empty()
             && (self.api_token.len() < 32 || self.api_token.chars().any(char::is_control))
         {
