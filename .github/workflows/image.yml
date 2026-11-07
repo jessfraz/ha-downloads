@@ -57,9 +57,21 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: ha-downloads:smoke
+          labels: ${{ steps.metadata.outputs.labels }}
           build-args: BUILD_VERSION=${{ steps.metadata.outputs.version }}
           cache-from: type=gha,scope=container-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=container-${{ matrix.arch }}
+      - name: Verify image source labels
+        env:
+          EXPECTED_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          docker image inspect ha-downloads:smoke --format '{{json .Config.Labels}}' |
+            jq -e --arg revision "$GITHUB_SHA" --arg version "$EXPECTED_VERSION" \
+              --arg source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" '
+                .["org.opencontainers.image.revision"] == $revision
+                and .["org.opencontainers.image.source"] == $source
+                and ($version == "" or .["org.opencontainers.image.version"] == $version)
+              '
       - name: Test packaged services and missing-configuration boundary
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
