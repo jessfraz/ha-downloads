@@ -31,7 +31,7 @@ docker run --rm --network none --cap-drop ALL --entrypoint /bin/sh "$image" -ec 
     par2 verify -q payload.par2 > /dev/null
     7zz a payload.7z payload > /dev/null
     7zz t payload.7z > /dev/null
-    python -c "import sabctools, cherrypy, cryptography; import ssl; assert ssl.OPENSSL_VERSION"
+    PYTHONPATH=/opt python -c "import sabnzbd.decoder, cherrypy, cryptography; import ssl; assert ssl.OPENSSL_VERSION; assert sabnzbd.decoder.SABCTOOLS_ENABLED, \"SAB native decoder is unavailable\""
 '
 docker run --rm --network none --cap-drop ALL "$image" --version
 docker run --rm --interactive --network none --cap-drop ALL --entrypoint python "$image" - <<'PY'

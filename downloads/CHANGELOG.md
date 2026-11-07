@@ -1,3 +1,9 @@
+# 0.1.7
+
+Match SABnzbd's required native decoder version and check its actual native
+compatibility flag before reporting readiness. Keep module failures distinct
+from VPN outages. Verify packaged module compatibility and image source labels.
+
 # 0.1.6
 
 Expose fresh functional readiness through the existing internal health endpoint

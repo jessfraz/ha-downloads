@@ -101,6 +101,19 @@ test("first run explains setup and keeps the downloader closed", async (t) => {
   assert.deepEqual(fixture.errors, []);
 });
 
+test("native module failure keeps a connected VPN distinct from downloader readiness", async (t) => {
+  const status = readyStatus();
+  status.state = "degraded";
+  status.message = "The downloader's required native modules are unavailable. Update the app.";
+  status.health = { ready: false, reasons: ["not_ready", "downloader_modules_unavailable"], checked_at_unix_ms: Date.now(), age_ms: 0, max_age_ms: 30000 };
+  const { page } = await panel(t, status);
+  await heading(page, "Downloader needs attention");
+  await heading(page, "Update the app");
+  assert.equal(await page.locator("#vpn-state").innerText(), "Connected");
+  assert.equal(await page.locator("#downloader-state").innerText(), "Needs attention");
+  assert.equal(await page.locator("iframe").count(), 0);
+});
+
 test("verified readiness opens the nested ingress queue and preserves a paused queue", async (t) => {
   const status = readyStatus();
   status.downloader.paused = true;

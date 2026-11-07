@@ -18,7 +18,9 @@ RUN curl --fail --location --retry 3 --output /tmp/sabnzbd.tar.gz \
     && mkdir /opt/sabnzbd \
     && tar -xzf /tmp/sabnzbd.tar.gz --strip-components=1 -C /opt/sabnzbd \
     && rm /tmp/sabnzbd.tar.gz \
-    && /opt/venv/bin/python /opt/sabnzbd/SABnzbd.py --version
+    && /opt/venv/bin/python /opt/sabnzbd/SABnzbd.py --version \
+    && PYTHONPATH=/opt/sabnzbd /opt/venv/bin/python -c \
+      "import sabnzbd.decoder; assert sabnzbd.decoder.SABCTOOLS_ENABLED"
 
 # Alpine does not package RARLAB's UnRAR. Build the unmodified official source
 # with the same musl toolchain, and retain its redistribution license.

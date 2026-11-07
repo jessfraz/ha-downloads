@@ -315,7 +315,7 @@ wheels = [
 
 [[package]]
 name = "ha-downloads-runtime"
-version = "0.1.6"
+version = "0.1.7"
 source = { virtual = "." }
 dependencies = [
     { name = "apprise" },
@@ -411,7 +411,7 @@ requires-dist = [
     { name = "rebulk", specifier = "==6.0.1" },
     { name = "requests", specifier = "==2.34.2" },
     { name = "requests-oauthlib", specifier = "==2.0.0" },
-    { name = "sabctools", specifier = "==9.7.3" },
+    { name = "sabctools", specifier = "==9.6.3" },
     { name = "sgmllib3k", specifier = "==1.0.0" },
     { name = "six", specifier = "==1.17.0" },
     { name = "tempora", specifier = "==5.13.0" },
@@ -790,18 +790,18 @@ wheels = [
 
 [[package]]
 name = "sabctools"
-version = "9.7.3"
+version = "9.6.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/79/92/f52e2676cc04b353d1662cc74087e8952bdf518cd4a8df60df2eec8e878e/sabctools-9.7.3.tar.gz", hash = "sha256:4a3cb4875afdb300931bc4c6142c71385cc802473c6411b81ea2312fd7d92002", size = 9474858, upload-time = "2026-10-30T11:05:34.481Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6c/aa/3d415b13b5978e9d457bc1ec4d35e7701622bc697dd928ba6e5d30cb8432/sabctools-9.6.3.tar.gz", hash = "sha256:faacd20d5ec9111e39c81326ca1e49a2be2b24b95c13c28f82e3e7ac198c9129", size = 276739, upload-time = "2026-08-03T07:46:02.331Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/55/a3/499c9fc78742bb35d752f9d6cce2f1a7986124f166f73bcb2cee37b17408/sabctools-9.7.3-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0d9bc21c29c1f01687614ea580dd8c57fbf8f268bc2fb759b6a103f286b0942d", size = 52431, upload-time = "2026-10-30T11:05:06.495Z" },
-    { url = "https://files.pythonhosted.org/packages/4f/78/41ff34938a72d21accc99d16997d8e14f85b57572e9a24aa8e25fb8558c7/sabctools-9.7.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c3668038f375c60f82c76045b713868cc849a6944f5c9220ab8d5d689cbca9d7", size = 96227, upload-time = "2026-10-30T11:05:07.854Z" },
-    { url = "https://files.pythonhosted.org/packages/e2/50/f63397d6985d20ffdbcf4537c1c1bbd9656410023cf5b94eb541055ba4e0/sabctools-9.7.3-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:943bf359e69a5856d4663a82ccb0fec772b9a343e594bd5e808d32e7478503a4", size = 1035703, upload-time = "2026-10-30T11:05:09.108Z" },
-    { url = "https://files.pythonhosted.org/packages/0e/3c/5b0503064d6e0cb59aba5618a7aec827f553335f92526a32303f33a5c296/sabctools-9.7.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:057f79cdeb84b51f31a231881e7aade90b0a7e997ee32da581ea4ae6810fbe8c", size = 1129785, upload-time = "2026-10-30T11:05:10.674Z" },
-    { url = "https://files.pythonhosted.org/packages/dd/25/53a54b5ec088d4517682c544eff9316554fba68e0651e452515016140ed7/sabctools-9.7.3-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ac78ac99c47229fff01062eb8a9b88683e4b79a84018cc4ddbdf162da100aab2", size = 52412, upload-time = "2026-10-30T11:05:12.049Z" },
-    { url = "https://files.pythonhosted.org/packages/37/f2/1420fd1715b599099d7cf4324666a4eb7a2e11c1193546b430acecd93842/sabctools-9.7.3-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b327187f7792ee7a0dea7080cfade2306386e1956acb19400b49e43134707e24", size = 96229, upload-time = "2026-10-30T11:05:13.278Z" },
-    { url = "https://files.pythonhosted.org/packages/b4/a4/d289eaa827670f08b4afde2afca66fd045aa97fccf80e21c2bd3c83c5621/sabctools-9.7.3-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:c348b81f1f50d2374e046a166f8afadd86dfeb8adbe156984fb0b19a53c1c27a", size = 1035711, upload-time = "2026-10-30T11:05:14.492Z" },
-    { url = "https://files.pythonhosted.org/packages/77/2f/7d2644a0901ea858393f2169b142ae8afa8f4c9fd22187ee6b9341702b24/sabctools-9.7.3-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:caea1eed0535009b50c4eaab1d3172aacd319941b896088ddc1b425500550585", size = 1129782, upload-time = "2026-10-30T11:05:16.524Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/9e/dc790363afb203879870db39ec0291f94854291814e0f7d2bf58fbe3aa62/sabctools-9.6.3-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0bdc5b4e3e5b65f3daa848f36b6b22131576bc9d58958d5f566766ba4a54f827", size = 287598, upload-time = "2026-08-03T07:44:46.807Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/e0/baabd5353d4c50919a823688914c0b213250fae48d01845e855803dd8602/sabctools-9.6.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3f65ff2c8eb3d209b868c687b5fc8d7a090f366e4d087253ed39771b8649c3d2", size = 657927, upload-time = "2026-08-03T07:44:48.375Z" },
+    { url = "https://files.pythonhosted.org/packages/44/a6/e2aeaf7ce02e7b6c106ca154818dd5e1e9f5f2deecb4b28b5111a7882f42/sabctools-9.6.3-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:262a18dea3ea2e748ed2a1466408459f2fdcbefc7ab4bda6a776b87968c5ca61", size = 1262216, upload-time = "2026-08-03T07:44:49.923Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/f8/ba8d3da4d112958bd14ccb76b4113f7c38ed09c9524d1e83212f441e48a4/sabctools-9.6.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:e58ae95346972f554bf5909697b3dd30244f0099209d0aa8e939498901e70ec7", size = 1681055, upload-time = "2026-08-03T07:44:51.809Z" },
+    { url = "https://files.pythonhosted.org/packages/00/af/8dad0e4f8d961da8f5fa3a2ecdf005cd35e9d8c9204a393c833c19c55375/sabctools-9.6.3-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d334177be0fb0ba4c0a7c0c85fc592e5cc792aa0748f5920560705da850380b9", size = 295364, upload-time = "2026-08-03T07:44:53.201Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/d2/c271117677bce4098905144cf4c8d825475bc65e6e5cbdbbcf8fb6092936/sabctools-9.6.3-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:955a02ff3bad1833424b3b952d6cd2199f64c7d05c33f6946efb512dc3af8d54", size = 664708, upload-time = "2026-08-03T07:44:54.874Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/b4/f4519bd4e28668392e9e7acdafd7c51e420f6e34e3020d959fe562a4271a/sabctools-9.6.3-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:03a8ab8ee7463ec54483e5c8f1673981de4819fb56533d47d634a071bafb55d7", size = 1265225, upload-time = "2026-08-03T07:44:56.561Z" },
+    { url = "https://files.pythonhosted.org/packages/45/03/bfb73f15a2358af3801afd3aa3a2716e977966d6897aac3824a793888194/sabctools-9.6.3-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:6a89f050d36cf5335fa93bed7354f29c0d6885c0e61c194f98489c9defe54b6b", size = 1683488, upload-time = "2026-08-03T07:44:58.418Z" },
 ]
 
 [[package]]

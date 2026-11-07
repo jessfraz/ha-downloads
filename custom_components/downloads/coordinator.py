@@ -41,6 +41,7 @@ class Reason(StrEnum):
     FIREWALL_UNVERIFIED = "firewall_unverified"
     DNS_UNVERIFIED = "dns_unverified"
     DOWNLOADER_UNAVAILABLE = "downloader_unavailable"
+    DOWNLOADER_MODULES_UNAVAILABLE = "downloader_modules_unavailable"
 
 
 @dataclass(frozen=True)

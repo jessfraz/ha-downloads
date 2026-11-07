@@ -1,5 +1,5 @@
 name: Downloads
-version: "0.1.6"
+version: "0.1.7"
 slug: downloads
 description: SABnzbd behind a Gluetun VPN with a firewall kill switch
 url: https://github.com/jessfraz/ha-downloads
