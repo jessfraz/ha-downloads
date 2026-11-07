@@ -219,6 +219,9 @@
     } else if (stopping) {
       setBanner("Downloads is stopping", message || "The app is shutting down its connection and downloader.", "Stopping");
       showHelp("Stopping safely", "Wait for the app to finish stopping before starting it again.");
+    } else if (status.state === "degraded" && status.downloader.state === "stopped") {
+      setBanner("Downloads stopped", message || "A protected service stopped. Review the app logs.", "Needs attention", "failure");
+      showHelp("Check the app logs", "Review the reported failure in Home Assistant before restarting the app.");
     } else if (failed) {
       setBanner("Protection check failed", message || "The connection checks need attention before downloads can open.", "Needs attention", "failure");
       showHelp("Check the app logs", "Review the VPN settings and app logs in Home Assistant. The downloads interface stays closed until all connection checks pass.");

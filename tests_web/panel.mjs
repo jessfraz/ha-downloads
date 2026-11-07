@@ -371,7 +371,7 @@ test("terminal service failures preserve their specific recovery message", async
   status.message = "Protected services could not be fully stopped. Restart the app.";
   status.health = { ready: false, reasons: ["not_ready", "checks_missing"], checked_at_unix_ms: null, age_ms: null, max_age_ms: 30000 };
   const { page } = await panel(t, status);
-  await heading(page, "VPN connection interrupted");
+  await heading(page, "Downloads stopped");
   assert.equal(await page.locator("#connection-message").innerText(), status.message);
   assert.equal(await page.locator("iframe").count(), 0);
 });
