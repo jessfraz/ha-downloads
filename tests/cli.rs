@@ -1,5 +1,34 @@
-use ha_downloads::status::{State, Status};
+use ha_downloads::{
+    monitor::{Check, Checks, Outcome},
+    status::{State, Status},
+};
 use std::process::Command;
+
+fn ready_status() -> Status {
+    let mut status = Status::ready("test", None, true, true);
+    let passed = Check {
+        outcome: Outcome::Passed,
+        ..Check::default()
+    };
+    status.diagnostics.checks = Checks {
+        vpn_service: passed,
+        vpn_health: passed,
+        dns_service: passed,
+        dns_lookup: passed,
+        resolver: passed,
+        firewall: passed,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis()
+        .try_into()
+        .expect("timestamp");
+    status.diagnostics.checked_at_unix_ms = Some(now);
+    status.diagnostics.downloader_check = passed;
+    status.diagnostics.downloader_checked_at_unix_ms = Some(now);
+    status
+}
 
 #[test]
 fn doctor_reads_the_real_status_contract_and_reports_readiness_by_exit_code() {
@@ -7,7 +36,7 @@ fn doctor_reads_the_real_status_contract_and_reports_readiness_by_exit_code() {
     let path = directory.path().join("status.json");
     for (status, expected) in [
         (Status::needs_configuration("Configure the VPN."), 2),
-        (Status::ready("test", None, true, true), 0),
+        (ready_status(), 0),
         (Status::degraded("test", "Tunnel unavailable.", true), 2),
     ] {
         std::fs::write(&path, serde_json::to_vec(&status).expect("encode")).expect("write status");
@@ -90,4 +119,20 @@ fn implicit_serve_uses_the_same_environment_validation_as_explicit_serve() {
         };
         assert_eq!(code, Some(2));
     }
+}
+
+#[test]
+fn doctor_does_not_accept_a_ready_label_without_current_checks() {
+    let directory = tempfile::tempdir().expect("status directory");
+    let path = directory.path().join("status.json");
+    let status = Status::ready("test", None, true, true);
+    std::fs::write(&path, serde_json::to_vec(&status).expect("encode")).expect("write status");
+    let output = Command::new(env!("CARGO_BIN_EXE_downloads"))
+        .args(["doctor", "--status-file"])
+        .arg(path)
+        .output()
+        .expect("doctor");
+    assert_eq!(output.status.code(), Some(2));
+    let actual: Status = serde_json::from_slice(&output.stdout).expect("typed status");
+    assert_eq!(actual.state, State::Ready);
 }

@@ -16,7 +16,13 @@ packaging:
     actionlint
     shellcheck scripts/container-smoke.sh scripts/network-test.sh
 
-check: rust packaging
+home-assistant:
+    uv sync --project integration --frozen --only-group dev
+    uv run --project integration --frozen --only-group dev ruff check --config integration/pyproject.toml custom_components tests_ha
+    uv run --project integration --frozen --only-group dev ruff format --check --config integration/pyproject.toml custom_components tests_ha
+    PYTHONPATH=. uv run --project integration --frozen --only-group dev pytest -c integration/pyproject.toml tests_ha
+
+check: rust packaging home-assistant
 
 test: check
 

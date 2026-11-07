@@ -4,7 +4,7 @@ use ha_downloads::{
     api::{self, Access},
     config::Config,
     monitor::{LifecycleEvent, ServiceFailure, log_lifecycle},
-    status::{State, Status},
+    status::Status,
 };
 use std::{
     net::{IpAddr, SocketAddr},
@@ -101,7 +101,7 @@ async fn doctor(args: Doctor) -> Result<ExitCode> {
             .context("No local app status is available. Start the app or use --url.")?;
         serde_json::from_slice(&bytes).context("Local app status is invalid.")?
     };
-    let ready = status.state == State::Ready;
+    let ready = status.health().ready;
     println!("{}", serde_json::to_string_pretty(&status)?);
     Ok(if ready {
         ExitCode::SUCCESS
@@ -213,7 +213,7 @@ async fn serve(args: Serve) -> Result<ExitCode> {
             result=task=>{
                 match result {
                     Ok(Err(error))=>log_lifecycle(LifecycleEvent::ProtectionServiceFailed {
-                        reason: error.downcast_ref::<ServiceFailure>().copied(),
+                        reason: error.downcast_ref::<ServiceFailure>().copied().unwrap_or(ServiceFailure::RuntimeFailed),
                     }),
                     Err(_)=>{
                         log_lifecycle(LifecycleEvent::ProtectionTaskStopped);

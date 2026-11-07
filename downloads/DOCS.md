@@ -82,6 +82,17 @@ terminal shutdown; earlier check history remains available. Logs identify
 known failure reasons and include the final HTTP or transport result when
 downloader startup times out, without logging response bodies or URLs.
 
+The same internal `/healthz` response includes functional readiness, fixed reason
+codes, the oldest check's timestamp and age, and the most recent terminal
+failure's source and exit status. Its HTTP status retains the watchdog behavior
+above: a recoverable outage returns 200 with `ready: false`. The response contains
+no provider, public IP, configuration, credential or free-form service output.
+The authenticated `/api/v1/health` endpoint returns the same projection.
+Checks older than 30 seconds, missing checks and future timestamps cannot be
+ready. The native HA integration polls this endpoint every 10 seconds through
+the existing internal network; its problem sensor is independent of queue
+activity. No host port mapping is required.
+
 VPN initialization, reconnection, and known upstream warnings/errors become
 fixed-message events. Unknown warnings use a generic code; unknown informational
 messages are discarded. Raw upstream lines, URLs, settings, and response bodies

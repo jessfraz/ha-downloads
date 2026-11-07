@@ -41,20 +41,17 @@
       </symbol>
     </svg>
 
-    <main class="shell">
-      <header class="app-header">
-        <div class="app-identity">
-          <span class="app-mark"><svg class="icon"><use href="#icon-download"/></svg></span>
-          <div><p class="eyebrow">Home Assistant</p><h1>Downloads</h1></div>
-        </div>
+    <header class="app-header">
+        <h1><a class="wordmark" href="./" aria-label="Downloads home"><svg class="icon" width="30" height="30" aria-hidden="true"><use href="#icon-download"/></svg>Downloads</a></h1>
         <div class="refresh-controls">
           <span id="last-checked" class="last-checked">Connecting…</span>
           <button id="refresh" class="icon-button" type="button" aria-label="Refresh status" title="Refresh status">
             <svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg>
           </button>
         </div>
-      </header>
+    </header>
 
+    <main class="shell">
       <section class="connection-panel" id="connection-panel" data-tone="neutral" aria-labelledby="connection-title">
         <div class="connection-icon"><svg class="icon" aria-hidden="true"><use id="connection-symbol" href="#icon-shield"/></svg></div>
         <div class="connection-copy">
@@ -123,11 +120,12 @@
         <div id="download-frame" class="download-frame"></div>
       </section>
 
-      <footer class="app-footer">
-        <p><svg class="icon" aria-hidden="true"><use href="#icon-shield"/></svg>Applies only to this app. Other Home Assistant apps keep their network settings.</p>
-        <span id="app-version" class="version" hidden></span>
-      </footer>
       <noscript><p class="noscript surface">Enable JavaScript to check the connection and open downloads.</p></noscript>
     </main>
+    <footer class="app-footer">
+      <p>Downloads <span id="app-version" class="app-version" hidden></span></p>
+      <p>Applies only to this app. Other Home Assistant apps keep their network settings.</p>
+      <a class="source-link" href="https://github.com/jessfraz/ha-downloads" target="_blank" rel="noopener noreferrer">Source code <span aria-hidden="true">↗</span></a>
+    </footer>
   </body>
 </html>

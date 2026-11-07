@@ -1,0 +1,13 @@
+{
+  "domain": "downloads",
+  "name": "Downloads",
+  "after_dependencies": ["hassio"],
+  "codeowners": ["@jessfraz"],
+  "config_flow": true,
+  "documentation": "https://github.com/jessfraz/ha-downloads",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.6"
+}

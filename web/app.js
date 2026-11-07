@@ -58,6 +58,11 @@
       typeof value.version !== "string" ||
       typeof value.vpn.provider !== "string" ||
       !(value.vpn.public_ip === null || typeof value.vpn.public_ip === "string")
+      || (value.health !== undefined && (
+        typeof value.health?.ready !== "boolean" ||
+        !Array.isArray(value.health.reasons) ||
+        !value.health.reasons.every((reason) => typeof reason === "string")
+      ))
     ) {
       throw new Error("Status response is not recognized");
     }
@@ -98,7 +103,7 @@
     const monitoring = status.diagnostics;
     panel.hidden = !monitoring?.checks;
     if (panel.hidden) return;
-    const names = [["vpn_service", "VPN service"], ["vpn_health", "VPN health"], ["dns_service", "DNS service"], ["dns_lookup", "DNS lookup"], ["resolver", "Resolver configuration"], ["firewall", "Firewall"]];
+    const names = [["vpn_service", "VPN service"], ["vpn_health", "VPN health"], ["dns_service", "DNS service"], ["dns_lookup", "DNS lookup"], ["resolver", "Resolver configuration"], ["firewall", "Firewall"], ["downloader", "Downloader API"]];
     const outcomes = { passed: "Passed", not_checked: "Not checked", stopped: "Stopped", timeout: "Request timed out", transport_error: "Request failed", http_error: "HTTP request rejected", invalid_response: "Invalid response", health_failed: "Health check failed", unsafe_resolver: "Resolver protection failed", dns_lookup_failed: "DNS lookup failed", firewall_failed: "Firewall check failed" };
     const details = { not_ready: "not ready", icmp: "ICMP check", dns: "DNS check", tls: "TLS check", timeout: "timeout", connection: "connection check", connect: "connection failed", connection_refused: "connection refused", connection_reset: "connection reset", broken_pipe: "broken pipe", unexpected_eof: "connection closed", body: "response interrupted", other: "unspecified cause" };
     const describe = (check) => {
@@ -110,13 +115,22 @@
       return parts.join(" · ");
     };
     const list = byId("diagnostic-checks");
-    list.replaceChildren(...names.map(([name, label]) => { const row = document.createElement("li"); row.textContent = `${label}: ${describe(monitoring.checks[name])}`; return row; }));
+    list.replaceChildren(...names.map(([name, label]) => { const row = document.createElement("li"); row.textContent = `${label}: ${describe(name === "downloader" ? monitoring.downloader_check : monitoring.checks[name])}`; return row; }));
     const incident = monitoring.last_incident;
     const history = byId("diagnostic-history");
     if (incident && Number.isFinite(incident.duration_ms)) {
-      const failures = names.filter(([name]) => incident.initial_checks?.[name]?.outcome !== "passed").map(([name, label]) => `${label}: ${describe(incident.initial_checks?.[name])}`).join("; ");
+      const failures = names.filter(([name]) => name !== "downloader" && incident.initial_checks?.[name]?.outcome !== "passed").map(([name, label]) => `${label}: ${describe(incident.initial_checks?.[name])}`).join("; ");
       history.textContent = `${incident.recovered_at_unix_ms === null ? "Current failed-check period" : "Last failed-check period"}: ${(incident.duration_ms / 1000).toFixed(1)} seconds. ${failures}`;
     } else history.textContent = "No failed-check period recorded since startup.";
+    const failure = monitoring.last_failure;
+    if (failure) {
+      const reasons = { vpn_exited: "VPN service exited", downloader_exited: "Downloader exited", vpn_not_ready: "VPN startup timed out", downloader_not_ready: "Downloader startup timed out", protection_checks_failed: "Protection checks failed", vpn_start_failed: "VPN service could not start", downloader_start_failed: "Downloader could not start", downloader_configuration_failed: "Downloader configuration failed", runtime_failed: "Protection runtime failed", cleanup_failed: "Services could not fully stop" };
+      const details = [reasons[failure.reason] || "Protected service failed"];
+      if (Number.isInteger(failure.exit_code)) details.push(`exit ${failure.exit_code}`);
+      if (Number.isInteger(failure.signal)) details.push(`signal ${failure.signal}`);
+      if (failure.cleanup_failed) details.push("cleanup incomplete");
+      history.textContent += ` Last service failure: ${details.join(" · ")}.`;
+    }
   }
 
   function showDownloads(paused) {
@@ -143,7 +157,7 @@
     const firewallVerified = status.protection.kill_switch === "verified";
     const dnsVerified = status.protection.dns === "verified";
     const ready = status.state === "ready" && vpnConnected && firewallVerified &&
-      dnsVerified && status.downloader.state === "running";
+      dnsVerified && status.downloader.state === "running" && status.health?.ready !== false;
     const setup = status.state === "needs_configuration";
     const stopping = status.state === "stopping";
     const failed = status.protection.kill_switch === "failed" || status.protection.dns === "failed";
@@ -152,9 +166,12 @@
 
     byId("setup").hidden = !setup;
     byId("connection-help").hidden = true;
-    byId("app-version").textContent = `v${status.version.slice(0, 40)}`;
+    byId("app-version").textContent = status.version.slice(0, 40);
     byId("app-version").hidden = false;
-    byId("last-checked").textContent = `Updated ${new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date())}`;
+    const checkedAt = status.health?.checked_at_unix_ms;
+    byId("last-checked").textContent = status.health !== undefined && !Number.isFinite(checkedAt)
+      ? "Checks unavailable"
+      : `Checked ${new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(checkedAt ?? Date.now()))}`;
     renderDiagnostics(status);
 
     const vpnLabels = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected", unknown: "Status unavailable", unhealthy: "Health check failed" };
@@ -188,6 +205,15 @@
       return;
     }
     closeDownloads();
+    if (status.health?.reasons.some((reason) => reason === "checks_stale" || reason === "checks_missing") && !setup && !stopping) {
+      for (const name of ["vpn", "firewall", "dns", "downloader"]) {
+        setCheck(name, "Unverified", "Recent check results are unavailable.");
+      }
+      ip.hidden = true;
+      setBanner("Connection checks unavailable", "Current VPN and downloader readiness could not be verified. Check the app diagnostics.", "Needs attention", "warning");
+      showHelp("Check the app logs", "The last status cannot establish that downloads are ready.");
+      return;
+    }
     if (setup) {
       setBanner("Set up your VPN", message || "Configure the VPN in the app settings to get started.", "Setup needed");
     } else if (stopping) {

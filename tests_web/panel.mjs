@@ -299,6 +299,8 @@ test("mobile, dark mode, reduced motion, and keyboard controls remain usable", a
   await heading(page, "Set up your VPN");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
   await page.keyboard.press("Tab");
+  assert.equal(await page.getByRole("link", { name: "Downloads home" }).evaluate((element) => element === document.activeElement), true);
+  await page.keyboard.press("Tab");
   assert.equal(await page.getByRole("button", { name: "Refresh status" }).evaluate((element) => element === document.activeElement), true);
   const before = fixture.requests;
   const updated = page.waitForResponse((response) => response.url() === `${base}api/v1/status`);
@@ -342,4 +344,21 @@ test("ingress follows Home Assistant theme changes independently of the system t
     return getComputedStyle(root).colorScheme === "light";
   });
   assert.equal(await root.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(245, 247, 250)");
+});
+
+
+test("stale functional checks close the queue and retain fixed service failure details", async (t) => {
+  const status = readyStatus();
+  status.health = { ready: false, reasons: ["checks_stale"], checked_at_unix_ms: 1000, age_ms: 31000, max_age_ms: 30000 };
+  status.diagnostics = {
+    checks: {}, last_incident: null,
+    last_failure: { reason: "downloader_exited", exit_code: 23, signal: null, cleanup_failed: false },
+  };
+  const { page, fixture } = await panel(t, status);
+  await heading(page, "Connection checks unavailable");
+  assert.equal(await page.locator("iframe").count(), 0);
+  await page.locator("#diagnostics-panel summary").click();
+  assert.match(await page.locator("#diagnostic-history").innerText(), /Downloader exited.*exit 23/);
+  assert.equal(await page.getByRole("link", { name: "Source code" }).getAttribute("href"), "https://github.com/jessfraz/ha-downloads");
+  assert.deepEqual(fixture.errors, []);
 });
