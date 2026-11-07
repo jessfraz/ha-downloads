@@ -108,8 +108,23 @@ pub struct Incident {
 pub struct Monitoring {
     pub checked_at_unix_ms: Option<u64>,
     pub checks: Checks,
+    #[serde(default)]
+    pub downloader_checked_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub downloader_check: Check,
     pub incident_count: u64,
     pub last_incident: Option<Incident>,
+    #[serde(default)]
+    pub last_failure: Option<ServiceIncident>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct ServiceIncident {
+    pub at_unix_ms: u64,
+    pub reason: ServiceFailure,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub cleanup_failed: bool,
 }
 #[derive(Default)]
 pub(crate) struct Tracker {
@@ -203,7 +218,7 @@ pub(crate) fn unix_ms() -> u64 {
 pub enum LifecycleEvent {
     StatusPersistenceFailed,
     ProtectionServiceFailed {
-        reason: Option<ServiceFailure>,
+        reason: ServiceFailure,
     },
     ProtectionTaskStopped,
     DownloaderReadinessTimedOut {
@@ -219,7 +234,9 @@ pub enum LifecycleEvent {
     },
 }
 /// Fixed failure reasons may cross the logging boundary; raw service errors may not.
-#[derive(Clone, Copy, Debug, Serialize, thiserror::Error)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, thiserror::Error, PartialEq, Eq,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceFailure {
     #[error("VPN service exited. Downloads have been stopped.")]
@@ -232,6 +249,16 @@ pub enum ServiceFailure {
     DownloaderNotReady,
     #[error("Protection checks failed. Downloads have been stopped.")]
     ProtectionChecksFailed,
+    #[error("VPN service could not start. Downloads are stopped.")]
+    VpnStartFailed,
+    #[error("Downloader service could not start. Downloads are stopped.")]
+    DownloaderStartFailed,
+    #[error("Downloader configuration could not be prepared. Downloads are stopped.")]
+    DownloaderConfigurationFailed,
+    #[error("The protection runtime failed. Downloads are stopped.")]
+    RuntimeFailed,
+    #[error("Protected services could not be fully stopped. Restart the app.")]
+    CleanupFailed,
 }
 pub fn log_lifecycle(event: LifecycleEvent) {
     #[derive(Serialize)]

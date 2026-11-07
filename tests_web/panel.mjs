@@ -285,6 +285,7 @@ test("starting and stopping remain understandable without exposing a queue", asy
   status.state = "starting";
   status.message = "";
   status.vpn.state = "connecting";
+  status.health = { ready: false, reasons: ["not_ready", "checks_missing"], checked_at_unix_ms: null, age_ms: null, max_age_ms: 30000 };
   const { page, fixture } = await panel(t, status);
   await heading(page, "Connecting securely");
   assert.equal(await page.locator("#vpn-state").innerText(), "Connecting");
@@ -298,6 +299,8 @@ test("mobile, dark mode, reduced motion, and keyboard controls remain usable", a
   const { page, fixture } = await panel(t, setupStatus(), { viewport: { width: 360, height: 800 }, colorScheme: "dark", reducedMotion: "reduce" });
   await heading(page, "Set up your VPN");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
+  await page.keyboard.press("Tab");
+  assert.equal(await page.getByRole("link", { name: "Downloads home" }).evaluate((element) => element === document.activeElement), true);
   await page.keyboard.press("Tab");
   assert.equal(await page.getByRole("button", { name: "Refresh status" }).evaluate((element) => element === document.activeElement), true);
   const before = fixture.requests;
@@ -342,4 +345,33 @@ test("ingress follows Home Assistant theme changes independently of the system t
     return getComputedStyle(root).colorScheme === "light";
   });
   assert.equal(await root.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(245, 247, 250)");
+});
+
+
+test("stale functional checks close the queue and retain fixed service failure details", async (t) => {
+  const status = readyStatus();
+  status.health = { ready: false, reasons: ["checks_stale"], checked_at_unix_ms: 1000, age_ms: 31000, max_age_ms: 30000 };
+  status.diagnostics = {
+    checks: {}, last_incident: null,
+    last_failure: { reason: "downloader_exited", exit_code: 23, signal: null, cleanup_failed: false },
+  };
+  const { page, fixture } = await panel(t, status);
+  await heading(page, "Connection checks unavailable");
+  assert.equal(await page.locator("iframe").count(), 0);
+  await page.locator("#diagnostics-panel summary").click();
+  assert.match(await page.locator("#diagnostic-history").innerText(), /Downloader exited.*exit 23/);
+  assert.equal(await page.getByRole("link", { name: "Source code" }).getAttribute("href"), "https://github.com/jessfraz/ha-downloads");
+  assert.deepEqual(fixture.errors, []);
+});
+
+
+test("terminal service failures preserve their specific recovery message", async (t) => {
+  const status = setupStatus();
+  status.state = "degraded";
+  status.message = "Protected services could not be fully stopped. Restart the app.";
+  status.health = { ready: false, reasons: ["not_ready", "checks_missing"], checked_at_unix_ms: null, age_ms: null, max_age_ms: 30000 };
+  const { page } = await panel(t, status);
+  await heading(page, "Downloads stopped");
+  assert.equal(await page.locator("#connection-message").innerText(), status.message);
+  assert.equal(await page.locator("iframe").count(), 0);
 });

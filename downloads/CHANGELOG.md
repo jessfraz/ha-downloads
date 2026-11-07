@@ -1,3 +1,13 @@
+# 0.1.6
+
+Expose fresh functional readiness through the existing internal health endpoint
+and a native, read-only Home Assistant integration. Track downloader API checks,
+retain typed terminal failure details, and reject stale ready snapshots in the
+doctor command. Add an exposure- and permission-gated Assist health query.
+Align the panel header and footer with the other apps, including its source link.
+Add a read-only `ha-downloads` CLI with native and authenticated Home Assistant
+transports, typed health/reasons, redacted JSON errors, and honest exit codes.
+
 # 0.1.5
 
 Report terminal service failures as unhealthy so Home Assistant's enabled

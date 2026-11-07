@@ -46,6 +46,14 @@ belong in this repository.
 - HTTP CONNECT proxy: Gluetun port 8888, internal apps only by default. Media
   manager external requests can use this tunnel; local HA API calls bypass it.
 - Health: `/healthz`, sanitized, no controls or credential information.
+- Native HA adapter: a problem sensor, Assist tool, and authenticated
+  `GET /api/downloads/health` share active-user read permission and loaded-entry
+  checks. Assist additionally requires explicit entity exposure.
+  The view returns a cached safe projection, never app
+  credentials, ingress routes or connection identifiers.
+- Read-only client: `ha-downloads --transport home-assistant status` uses the
+  existing HA credential environment. Native status can use a token file or
+  the app's local snapshot. The client binary cannot start services.
 
 ## Frontend status contract
 

@@ -1,7 +1,10 @@
 //! Own both process groups. SAB stops before Gluetun can remove its protections.
 use crate::{
     config::Config,
-    monitor::{Check, LifecycleEvent, Outcome, ServiceFailure, Tracker, log_lifecycle},
+    monitor::{
+        Check, LifecycleEvent, Outcome, ServiceFailure, ServiceIncident, Tracker, log_lifecycle,
+        unix_ms,
+    },
     status::{DownloaderState, Status, Verification, VpnState},
     vpn::{PRIVATE_DIR, Probe, Protection, Secrets, request_failure},
 };
@@ -196,6 +199,7 @@ async fn reap_container_children() -> Result<()> {
 struct Children {
     vpn: Option<OwnedProcess>,
     downloader: Option<OwnedProcess>,
+    failure: Option<ServiceIncident>,
 }
 impl Children {
     async fn stop(&mut self) -> Result<()> {
@@ -220,6 +224,13 @@ impl Children {
         if let Some(vpn) = self.vpn.as_mut()
             && let Some(exit) = vpn.exited()?
         {
+            self.failure = Some(ServiceIncident {
+                at_unix_ms: unix_ms(),
+                reason: ServiceFailure::VpnExited,
+                exit_code: exit.code(),
+                signal: exit.signal(),
+                cleanup_failed: false,
+            });
             log_lifecycle(LifecycleEvent::VpnProcessExited {
                 exit_code: exit.code(),
                 signal: exit.signal(),
@@ -229,6 +240,13 @@ impl Children {
         if let Some(sab) = self.downloader.as_mut()
             && let Some(exit) = sab.exited()?
         {
+            self.failure = Some(ServiceIncident {
+                at_unix_ms: unix_ms(),
+                reason: ServiceFailure::DownloaderExited,
+                exit_code: exit.code(),
+                signal: exit.signal(),
+                cleanup_failed: false,
+            });
             log_lifecycle(LifecycleEvent::DownloaderProcessExited {
                 exit_code: exit.code(),
                 signal: exit.signal(),
@@ -247,7 +265,10 @@ impl Children {
         if *shutdown.borrow() {
             return Ok(());
         }
-        self.vpn = Some(OwnedProcess::spawn(secrets.command(config)?)?);
+        self.vpn = Some(
+            OwnedProcess::spawn(secrets.command(config)?)
+                .map_err(|_| ServiceFailure::VpnStartFailed)?,
+        );
         let probe = Probe::new(secrets.api_key.clone())?;
         let mut tracker = Tracker::new();
         let deadline = Instant::now() + Duration::from_secs(180);
@@ -267,7 +288,8 @@ impl Children {
         if *shutdown.borrow() {
             return Ok(());
         }
-        prepare_downloader(Path::new("/data/sabnzbd"))?;
+        prepare_downloader(Path::new("/data/sabnzbd"))
+            .map_err(|_| ServiceFailure::DownloaderConfigurationFailed)?;
         let mut sab = Command::new("/opt/venv/bin/python");
         sab.args([
             "/opt/SABnzbd.py",
@@ -289,7 +311,8 @@ impl Children {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-        self.downloader = Some(OwnedProcess::spawn(sab)?);
+        self.downloader =
+            Some(OwnedProcess::spawn(sab).map_err(|_| ServiceFailure::DownloaderStartFailed)?);
         let mut starting = Status::starting(&config.vpn.provider);
         starting.downloader.state = DownloaderState::Starting;
         starting.downloader.paused = None;
@@ -298,34 +321,21 @@ impl Children {
             .no_proxy()
             .timeout(Duration::from_secs(2))
             .build()?;
+        let downloader_url =
+            "http://127.0.0.1:8081/sabnzbd/api?mode=version&output=json".parse::<reqwest::Url>()?;
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             self.check_children()?;
             let protection = tokio::select! { _ = shutdown.changed() => return Ok(()), value = probe.check() => value };
-            let diagnostics = tracker.observe(protection.checks);
-            status.send_modify(|value| value.diagnostics = diagnostics);
+            let mut diagnostics = tracker.observe(protection.checks);
             if !protection.firewall() || !protection.dns_safe() {
+                status.send_modify(|value| value.diagnostics = diagnostics);
                 return Err(ServiceFailure::ProtectionChecksFailed.into());
             }
-            let started = std::time::Instant::now();
-            let check = match client
-                .get("http://127.0.0.1:8081/sabnzbd/api?mode=version&output=json")
-                .send()
-                .await
-            {
-                Ok(response) => Check {
-                    http_status: Some(response.status().as_u16()),
-                    ..Check::measured(
-                        if response.status().is_success() {
-                            Outcome::Passed
-                        } else {
-                            Outcome::HttpError
-                        },
-                        started,
-                    )
-                },
-                Err(error) => request_failure(&error, started),
-            };
+            let check = downloader_check(&client, &downloader_url).await;
+            diagnostics.downloader_check = check;
+            diagnostics.downloader_checked_at_unix_ms = Some(unix_ms());
+            status.send_modify(|value| value.diagnostics = diagnostics);
             if check.passed() {
                 break;
             }
@@ -338,16 +348,46 @@ impl Children {
         loop {
             self.check_children()?;
             let protection = tokio::select! { _ = shutdown.changed() => return Ok(()), value = probe.check() => value };
-            let diagnostics = tracker.observe(protection.checks);
-            status.send_modify(|value| value.diagnostics = diagnostics);
+            let mut diagnostics = tracker.observe(protection.checks);
             if !protection.firewall() || !protection.dns_safe() {
+                status.send_modify(|value| value.diagnostics = diagnostics);
                 return Err(ServiceFailure::ProtectionChecksFailed.into());
             }
+            diagnostics.downloader_check = downloader_check(&client, &downloader_url).await;
+            diagnostics.downloader_checked_at_unix_ms = Some(unix_ms());
+            status.send_modify(|value| value.diagnostics = diagnostics);
             publish(status, &config.vpn.provider, protection, &probe).await;
             tokio::select! { _ = shutdown.changed() => return Ok(()), _ = sleep(Duration::from_secs(3)) => {} }
         }
     }
 }
+
+async fn downloader_check(client: &reqwest::Client, url: &reqwest::Url) -> Check {
+    #[derive(serde::Deserialize)]
+    struct Version {
+        version: String,
+    }
+    let started = std::time::Instant::now();
+    let response = match client.get(url.clone()).send().await {
+        Ok(response) => response,
+        Err(error) => return request_failure(&error, started),
+    };
+    let http_status = response.status();
+    let outcome = if !http_status.is_success() {
+        Outcome::HttpError
+    } else {
+        match response.json::<Version>().await {
+            Ok(version) if !version.version.is_empty() => Outcome::Passed,
+            Err(error) if error.is_timeout() => return request_failure(&error, started),
+            _ => Outcome::InvalidResponse,
+        }
+    };
+    Check {
+        http_status: Some(http_status.as_u16()),
+        ..Check::measured(outcome, started)
+    }
+}
+
 fn prepare_downloader(directory: &Path) -> Result<()> {
     match fs::DirBuilder::new().mode(0o700).create(directory) {
         Ok(()) => {}
@@ -431,6 +471,11 @@ async fn publish(
         value
     };
     status.diagnostics = sender.borrow().diagnostics.clone();
+    if !status.diagnostics.downloader_check.passed() && status.state == crate::status::State::Ready
+    {
+        status.state = crate::status::State::Degraded;
+        status.message = "The downloader API is unavailable. Check the app diagnostics.".into();
+    }
     status.protection.kill_switch = if protection.firewall() {
         Verification::Verified
     } else {
@@ -478,13 +523,39 @@ pub async fn run(
     let result = children
         .supervise(&config, &secrets, &status, &mut shutdown)
         .await;
-    let diagnostics = status.borrow().diagnostics.clone();
+    let mut diagnostics = status.borrow().diagnostics.clone();
+    if let Err(error) = &result {
+        diagnostics.last_failure = Some(
+            children.failure.clone().unwrap_or(ServiceIncident {
+                at_unix_ms: unix_ms(),
+                reason: error
+                    .downcast_ref::<ServiceFailure>()
+                    .copied()
+                    .unwrap_or(ServiceFailure::RuntimeFailed),
+                exit_code: None,
+                signal: None,
+                cleanup_failed: false,
+            }),
+        );
+    }
     let mut stopping = Status::stopping(&config.vpn.provider);
     stopping.diagnostics = diagnostics.clone();
     status.send_replace(stopping);
     let cleanup = children.stop().await;
     drop(secrets);
     if result.is_err() || cleanup.is_err() {
+        if cleanup.is_err() {
+            diagnostics
+                .last_failure
+                .get_or_insert(ServiceIncident {
+                    at_unix_ms: unix_ms(),
+                    reason: ServiceFailure::CleanupFailed,
+                    exit_code: None,
+                    signal: None,
+                    cleanup_failed: true,
+                })
+                .cleanup_failed = true;
+        }
         let message = if cleanup.is_err() {
             "Protected services could not be fully stopped. Restart the app.".into()
         } else if let Some(reason) = result
@@ -502,6 +573,8 @@ pub async fn run(
         // These checks describe services that have now been stopped, not current protection.
         failed.diagnostics.checks = Default::default();
         failed.diagnostics.checked_at_unix_ms = None;
+        failed.diagnostics.downloader_check = Default::default();
+        failed.diagnostics.downloader_checked_at_unix_ms = None;
         if cleanup.is_ok() {
             failed.vpn.state = VpnState::Disconnected;
         }
@@ -514,13 +587,72 @@ pub async fn run(
 mod tests {
     use crate::{
         config::Config,
-        monitor::{Check, Checks, Outcome},
-        runtime::{OwnedProcess, run},
+        monitor::{Check, Checks, Outcome, ServiceFailure},
+        runtime::{Children, OwnedProcess, downloader_check, run},
         status::{State, Status, VpnState},
         vpn::{Probe, Protection},
     };
     use std::time::Duration;
     use tokio::{process::Command, sync::watch};
+
+    #[tokio::test]
+    async fn downloader_probe_requires_a_real_version_response() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        for (code, body, expected) in [
+            (200, r#"{"version":"5.1.3"}"#, Outcome::Passed),
+            (200, r#"{"error":"unavailable"}"#, Outcome::InvalidResponse),
+            (503, "unavailable", Outcome::HttpError),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let url = format!("http://{}/", listener.local_addr().expect("address"))
+                .parse()
+                .expect("url");
+            let task = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut request = [0; 4096];
+                assert!(stream.read(&mut request).await.expect("request") > 0);
+                stream.write_all(format!(
+                    "HTTP/1.1 {code} Result\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ).as_bytes()).await.expect("response");
+            });
+            let check = downloader_check(&client, &url).await;
+            assert_eq!(check.outcome, expected);
+            assert_eq!(check.http_status, Some(code));
+            task.await.expect("server");
+        }
+    }
+
+    #[tokio::test]
+    async fn child_failure_retains_its_source_and_exit_status_before_cleanup() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 23"]);
+        let mut process = OwnedProcess::spawn(command).expect("spawn");
+        process.child.wait().await.expect("wait");
+        let mut children = Children {
+            downloader: Some(process),
+            ..Children::default()
+        };
+        let error = children.check_children().expect_err("failed downloader");
+        assert_eq!(
+            error.downcast_ref::<ServiceFailure>(),
+            Some(&ServiceFailure::DownloaderExited)
+        );
+        children.stop().await.expect("cleanup");
+        let failure = children.failure.expect("retained failure");
+        assert_eq!(failure.reason, ServiceFailure::DownloaderExited);
+        assert_eq!(failure.exit_code, Some(23));
+        assert_eq!(failure.signal, None);
+        assert!(failure.at_unix_ms > 0);
+        assert!(!failure.cleanup_failed);
+    }
     #[tokio::test]
     async fn status_distinguishes_stopped_service_failed_health_and_unavailable_checks() {
         let passed = Check {

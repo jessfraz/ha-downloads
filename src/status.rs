@@ -1,4 +1,4 @@
-use crate::monitor::Monitoring;
+use crate::monitor::{Monitoring, ServiceIncident};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +66,107 @@ pub struct Status {
     #[serde(default)]
     pub diagnostics: Monitoring,
 }
+
+/// Native API snapshot shared by the producer and its typed CLI client.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct StatusSnapshot {
+    #[serde(flatten)]
+    pub status: Status,
+    pub health: Health,
+}
+
+/// Functional readiness is separate from `/healthz`, which serves the watchdog.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct Health {
+    pub ready: bool,
+    pub state: State,
+    pub reasons: Vec<HealthReason>,
+    pub checked_at_unix_ms: Option<u64>,
+    pub age_ms: Option<u64>,
+    pub max_age_ms: u64,
+    pub last_failure: Option<ServiceIncident>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthReason {
+    NotReady,
+    ChecksMissing,
+    ChecksStale,
+    VpnUnavailable,
+    FirewallUnverified,
+    DnsUnverified,
+    DownloaderUnavailable,
+}
+
 impl Status {
+    pub fn health(&self) -> Health {
+        self.health_at(crate::monitor::unix_ms())
+    }
+
+    fn health_at(&self, now_unix_ms: u64) -> Health {
+        // The runtime probes every three seconds; allow bounded probe time and
+        // scheduler delays, without treating a frozen snapshot as healthy.
+        const MAX_AGE_MS: u64 = 30_000;
+        let mut reasons = Vec::new();
+        if self.state != State::Ready {
+            reasons.push(HealthReason::NotReady);
+        }
+        let checked_at = self
+            .diagnostics
+            .checked_at_unix_ms
+            .zip(self.diagnostics.downloader_checked_at_unix_ms)
+            .map(|(protection, downloader)| protection.min(downloader));
+        let future = self
+            .diagnostics
+            .checked_at_unix_ms
+            .is_some_and(|time| time > now_unix_ms)
+            || self
+                .diagnostics
+                .downloader_checked_at_unix_ms
+                .is_some_and(|time| time > now_unix_ms);
+        let age = checked_at
+            .filter(|_| !future)
+            .and_then(|checked| now_unix_ms.checked_sub(checked));
+        if checked_at.is_none() {
+            reasons.push(HealthReason::ChecksMissing);
+        } else if age.is_none_or(|age| age > MAX_AGE_MS) {
+            reasons.push(HealthReason::ChecksStale);
+        }
+        if self.vpn.state != VpnState::Connected
+            || !self.diagnostics.checks.vpn_service.passed()
+            || !self.diagnostics.checks.vpn_health.passed()
+        {
+            reasons.push(HealthReason::VpnUnavailable);
+        }
+        if self.protection.kill_switch != Verification::Verified
+            || !self.diagnostics.checks.firewall.passed()
+        {
+            reasons.push(HealthReason::FirewallUnverified);
+        }
+        if self.protection.dns != Verification::Verified
+            || !self.diagnostics.checks.resolver.passed()
+            || !self.diagnostics.checks.dns_service.passed()
+            || !self.diagnostics.checks.dns_lookup.passed()
+        {
+            reasons.push(HealthReason::DnsUnverified);
+        }
+        if self.downloader.state != DownloaderState::Running
+            || !self.diagnostics.downloader_check.passed()
+        {
+            reasons.push(HealthReason::DownloaderUnavailable);
+        }
+        Health {
+            ready: reasons.is_empty(),
+            state: self.state.clone(),
+            reasons,
+            checked_at_unix_ms: checked_at,
+            age_ms: age,
+            max_age_ms: MAX_AGE_MS,
+            last_failure: self.diagnostics.last_failure.clone(),
+        }
+    }
+
     pub fn needs_configuration(message: &str) -> Self {
         Self {
             version: env!("CARGO_PKG_VERSION").into(),
@@ -154,7 +254,80 @@ impl Status {
 
 #[cfg(test)]
 mod tests {
-    use crate::status::{DownloaderState, State, Status, Verification};
+    use crate::{
+        monitor::{Check, Checks, Outcome},
+        status::{DownloaderState, HealthReason, State, Status, Verification},
+    };
+
+    fn checked_status() -> Status {
+        let passed = Check {
+            outcome: Outcome::Passed,
+            ..Check::default()
+        };
+        let mut status = Status::ready("test", None, true, true);
+        status.diagnostics.checks = Checks {
+            vpn_service: passed,
+            vpn_health: passed,
+            dns_service: passed,
+            dns_lookup: passed,
+            resolver: passed,
+            firewall: passed,
+        };
+        status.diagnostics.checked_at_unix_ms = Some(100_000);
+        status.diagnostics.downloader_check = passed;
+        status.diagnostics.downloader_checked_at_unix_ms = Some(101_000);
+        status
+    }
+
+    #[test]
+    fn readiness_requires_current_functional_checks_and_ignores_queue_pause() {
+        let mut status = checked_status();
+        for paused in [None, Some(false), Some(true)] {
+            status.downloader.paused = paused;
+            assert!(status.health_at(130_000).ready);
+        }
+        let stale = status.health_at(130_001);
+        assert!(!stale.ready);
+        assert_eq!(stale.reasons, vec![HealthReason::ChecksStale]);
+        assert_eq!(stale.checked_at_unix_ms, Some(100_000));
+        assert_eq!(stale.age_ms, Some(30_001));
+        assert_eq!(
+            status.health_at(99_999).reasons,
+            vec![HealthReason::ChecksStale]
+        );
+        status.diagnostics.downloader_checked_at_unix_ms = Some(200_000);
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::ChecksStale]
+        );
+        status.diagnostics.downloader_checked_at_unix_ms = None;
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::ChecksMissing]
+        );
+    }
+
+    #[test]
+    fn readiness_does_not_accept_stale_flags_or_a_hung_downloader() {
+        let mut status = checked_status();
+        status.diagnostics.checks.firewall.outcome = Outcome::FirewallFailed;
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::FirewallUnverified]
+        );
+        status.diagnostics.checks.firewall.outcome = Outcome::Passed;
+        status.diagnostics.downloader_check.outcome = Outcome::Timeout;
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::DownloaderUnavailable]
+        );
+        status.diagnostics.downloader_check.outcome = Outcome::Passed;
+        status.state = State::Degraded;
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::NotReady]
+        );
+    }
     #[test]
     fn tunnel_health_alone_never_claims_protection() {
         let status = Status::ready("test", None, false, true);

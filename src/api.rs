@@ -1,4 +1,4 @@
-use crate::status::{DownloaderState, State, Status};
+use crate::status::{DownloaderState, State, Status, StatusSnapshot};
 use dropshot::{
     ApiDescription, Body, ClientErrorStatusCode, ConfigDropshot, HttpError, HttpResponseOk,
     HttpServer, HttpServerStarter, Path, RequestContext, UntypedBody, endpoint,
@@ -126,26 +126,42 @@ fn prefix(r: &RequestContext<Arc<Context>>) -> Result<String, HttpError> {
     Ok(value.into())
 }
 #[endpoint {method=GET,path="/healthz",tags=["system"]}]
-async fn health(r: RequestContext<Arc<Context>>) -> Result<HttpResponseOk<Health>, HttpError> {
+async fn health(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
     let status = r.context().status.borrow();
-    if status.state == State::Degraded && status.downloader.state == DownloaderState::Stopped {
-        return Err(HttpError::for_unavail(
-            None,
-            "The protection runtime stopped. Restart the app.".into(),
-        ));
-    }
-    Ok(HttpResponseOk(Health {
-        state: status.state.clone(),
-    }))
-}
-#[derive(serde::Serialize, JsonSchema)]
-struct Health {
-    state: crate::status::State,
+    let code =
+        if status.state == State::Degraded && status.downloader.state == DownloaderState::Stopped {
+            http::StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            http::StatusCode::OK
+        };
+    // This existing internal endpoint is also consumed by Supervisor's watchdog.
+    // Return only typed health fields; status contains connection identifiers.
+    let body = serde_json::to_vec(&status.health())
+        .map_err(|_| HttpError::for_internal_error("Health unavailable.".into()))?;
+    Response::builder()
+        .status(code)
+        .header("content-type", "application/json")
+        .header("cache-control", "no-store")
+        .body(Body::from(body))
+        .map_err(|_| HttpError::for_internal_error("Health unavailable.".into()))
 }
 #[endpoint {method=GET,path="/api/v1/status",tags=["system"]}]
-async fn app_status(r: RequestContext<Arc<Context>>) -> Result<HttpResponseOk<Status>, HttpError> {
+async fn app_status(
+    r: RequestContext<Arc<Context>>,
+) -> Result<HttpResponseOk<StatusSnapshot>, HttpError> {
     authenticate(&r)?;
-    Ok(HttpResponseOk(r.context().status.borrow().clone()))
+    let status = r.context().status.borrow().clone();
+    Ok(HttpResponseOk(StatusSnapshot {
+        health: status.health(),
+        status,
+    }))
+}
+#[endpoint {method=GET,path="/api/v1/health",tags=["system"]}]
+async fn readiness(
+    r: RequestContext<Arc<Context>>,
+) -> Result<HttpResponseOk<crate::status::Health>, HttpError> {
+    authenticate(&r)?;
+    Ok(HttpResponseOk(r.context().status.borrow().health()))
 }
 #[endpoint {method=GET,path="/",tags=["web"]}]
 async fn index(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
@@ -450,6 +466,7 @@ pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     let mut api = ApiDescription::new();
     api.register(health)?;
     api.register(app_status)?;
+    api.register(readiness)?;
     api.register(index)?;
     api.register(javascript)?;
     api.register(stylesheet)?;
@@ -495,7 +512,7 @@ mod tests {
 mod http_tests {
     use crate::{
         api::{self, Access, Context},
-        status::{State, Status},
+        status::{Health, HealthReason, State, Status},
     };
     use http::{Method, StatusCode};
     use serde::Deserialize;
@@ -527,6 +544,52 @@ mod http_tests {
     fn context(access: Access) -> Context {
         let (_, rx) = watch::channel(Status::needs_configuration("Configure the VPN."));
         Context::new(access, rx).expect("context")
+    }
+    #[tokio::test]
+    async fn readiness_is_authenticated_and_never_accepts_a_ready_label_alone() {
+        let (_, rx) = watch::channel(Status::ready("test", None, true, true));
+        let server = api::start(
+            listener(),
+            Arc::new(
+                Context::new(
+                    Access::Direct {
+                        token_hash: Context::token_hash("test-secret"),
+                    },
+                    rx,
+                )
+                .expect("context"),
+            ),
+        )
+        .expect("server");
+        let url = format!("http://{}/api/v1/health", server.local_addr());
+        let client = client();
+        assert_eq!(
+            client
+                .get(&url)
+                .send()
+                .await
+                .expect("unauthenticated")
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let health: Health = client
+            .get(url)
+            .bearer_auth("test-secret")
+            .send()
+            .await
+            .expect("health")
+            .json()
+            .await
+            .expect("typed health");
+        assert!(!health.ready);
+        assert_eq!(health.state, State::Ready);
+        assert!(health.reasons.contains(&HealthReason::ChecksMissing));
+        assert!(
+            health
+                .reasons
+                .contains(&HealthReason::DownloaderUnavailable)
+        );
+        server.close().await.expect("close");
     }
     #[tokio::test]
     async fn health_reports_terminal_failure_without_restarting_recoverable_states() {
@@ -582,7 +645,7 @@ mod http_tests {
         .expect("direct");
         let url = format!("http://{}", direct.local_addr());
         let client = client();
-        for route in ["/api/v1/status", "/api/v1/status"] {
+        for route in ["/api/v1/status", "/api/v1/health"] {
             let request = client.get(format!("{url}{route}")).bearer_auth("wrong");
             assert_eq!(
                 request.send().await.expect("response").status(),

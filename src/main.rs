@@ -2,9 +2,10 @@ use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use ha_downloads::{
     api::{self, Access},
+    cli::{StatusArgs, Transport},
     config::Config,
     monitor::{LifecycleEvent, ServiceFailure, log_lifecycle},
-    status::{State, Status},
+    status::Status,
 };
 use std::{
     net::{IpAddr, SocketAddr},
@@ -13,7 +14,6 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::watch;
-use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(
@@ -22,6 +22,8 @@ use zeroize::Zeroizing;
     about = "VPN-protected downloads for Home Assistant"
 )]
 struct Cli {
+    #[arg(long, global = true, value_enum, default_value_t = Transport::Native)]
+    transport: Transport,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -30,7 +32,8 @@ enum Command {
     /// Start the app using Home Assistant's options by default.
     Serve(Serve),
     /// Read sanitized local status, or query a remote status API.
-    Doctor(Doctor),
+    #[command(visible_alias = "status")]
+    Doctor(StatusArgs),
     /// Print the OpenAPI description without starting the app.
     Openapi,
 }
@@ -44,70 +47,6 @@ struct Serve {
     api_listen: SocketAddr,
     #[arg(long, env = "DOWNLOADS_INGRESS_PEER", default_value = "172.30.32.2")]
     ingress_peer: IpAddr,
-}
-#[derive(Args)]
-struct Doctor {
-    #[arg(long, env = "DOWNLOADS_URL")]
-    url: Option<reqwest::Url>,
-    #[arg(long, env = "DOWNLOADS_TOKEN_FILE", requires = "url")]
-    token_file: Option<PathBuf>,
-    #[arg(
-        long,
-        default_value = "/run/downloads/status.json",
-        conflicts_with = "url"
-    )]
-    status_file: PathBuf,
-}
-async fn doctor(args: Doctor) -> Result<ExitCode> {
-    let status: Status = if let Some(base) = args.url {
-        anyhow::ensure!(
-            matches!(base.scheme(), "http" | "https")
-                && base.username().is_empty()
-                && base.password().is_none(),
-            "Use an HTTP(S) API URL without credentials."
-        );
-        let path = args
-            .token_file
-            .context("Set DOWNLOADS_TOKEN_FILE or pass --token-file for the status API.")?;
-        let token = Zeroizing::new(
-            tokio::fs::read_to_string(path)
-                .await
-                .context("Cannot read status API token file.")?,
-        );
-        let url = base
-            .join("api/v1/status")
-            .context("Invalid status API URL.")?;
-        let response = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(10))
-            .build()?
-            .get(url)
-            .bearer_auth(token.trim())
-            .send()
-            .await
-            .map_err(|_| anyhow::anyhow!("Status API is unavailable."))?;
-        anyhow::ensure!(
-            response.status().is_success(),
-            "Status API rejected the request (HTTP {}).",
-            response.status().as_u16()
-        );
-        response
-            .json()
-            .await
-            .map_err(|_| anyhow::anyhow!("Status API returned an invalid response."))?
-    } else {
-        let bytes = tokio::fs::read(args.status_file)
-            .await
-            .context("No local app status is available. Start the app or use --url.")?;
-        serde_json::from_slice(&bytes).context("Local app status is invalid.")?
-    };
-    let ready = status.state == State::Ready;
-    println!("{}", serde_json::to_string_pretty(&status)?);
-    Ok(if ready {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(2)
-    })
 }
 async fn persist_status(path: &Path, status: &Status) -> Result<()> {
     let parent = path.parent().context("Status path has no parent.")?;
@@ -213,7 +152,7 @@ async fn serve(args: Serve) -> Result<ExitCode> {
             result=task=>{
                 match result {
                     Ok(Err(error))=>log_lifecycle(LifecycleEvent::ProtectionServiceFailed {
-                        reason: error.downcast_ref::<ServiceFailure>().copied(),
+                        reason: error.downcast_ref::<ServiceFailure>().copied().unwrap_or(ServiceFailure::RuntimeFailed),
                     }),
                     Err(_)=>{
                         log_lifecycle(LifecycleEvent::ProtectionTaskStopped);
@@ -254,10 +193,17 @@ async fn main() -> ExitCode {
     if args.len() == 1 {
         args.push("serve".into());
     }
-    let result = match Cli::parse_from(args).command {
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => return ha_downloads::cli::argument_error(error),
+    };
+    let result = match cli.command {
         None => Err(anyhow::anyhow!("Choose an app command.")),
+        Some(Command::Serve(_)) if cli.transport != Transport::Native => Err(anyhow::anyhow!(
+            "Serving the app requires native transport."
+        )),
         Some(Command::Serve(args)) => serve(args).await,
-        Some(Command::Doctor(args)) => doctor(args).await,
+        Some(Command::Doctor(args)) => Ok(ha_downloads::cli::status(args, cli.transport).await),
         Some(Command::Openapi) => openapi(),
     };
     match result {

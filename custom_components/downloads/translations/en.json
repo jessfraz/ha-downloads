@@ -1,0 +1,32 @@
+{
+  "title": "Downloads",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Downloads",
+        "description": "Select the installed Downloads app. Only connection health is exposed; this integration cannot change the VPN or download queue.",
+        "data": {
+          "addon_slug": "Downloads app"
+        }
+      }
+    },
+    "error": {
+      "app_not_found": "Select an installed Downloads app.",
+      "cannot_connect": "Downloads health could not be read. Update and start the app, then try again."
+    },
+    "abort": {
+      "already_configured": "Downloads is already configured.",
+      "single_instance_allowed": "Downloads is already configured.",
+      "supervisor_required": "This integration requires Home Assistant Supervisor.",
+      "supervisor_unavailable": "Supervisor could not be reached. Try again later.",
+      "app_not_found": "Install the Downloads app before adding this integration."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "problem": {
+        "name": "Problem"
+      }
+    }
+  }
+}
