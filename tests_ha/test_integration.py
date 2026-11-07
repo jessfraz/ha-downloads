@@ -59,6 +59,17 @@ async def test_native_problem_sensor_recovers_after_transport_failure(
     assert hass.states.get(entity).state == "on"
     assert "vpn_unavailable" in hass.states.get(entity).attributes["reasons"]
     aioclient_mock.clear_requests()
+    module_failure = health_record(ready=False)
+    module_failure["reasons"] = ["not_ready", "downloader_modules_unavailable"]
+    aioclient_mock.get(HEALTH_URL, json=module_failure)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(entity).state == "on"
+    assert (
+        "downloader_modules_unavailable"
+        in hass.states.get(entity).attributes["reasons"]
+    )
+    aioclient_mock.clear_requests()
     aioclient_mock.get(HEALTH_URL, status=502)
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()

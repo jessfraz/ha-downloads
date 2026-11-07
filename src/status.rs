@@ -97,6 +97,7 @@ pub enum HealthReason {
     FirewallUnverified,
     DnsUnverified,
     DownloaderUnavailable,
+    DownloaderModulesUnavailable,
 }
 
 impl Status {
@@ -154,7 +155,15 @@ impl Status {
         if self.downloader.state != DownloaderState::Running
             || !self.diagnostics.downloader_check.passed()
         {
-            reasons.push(HealthReason::DownloaderUnavailable);
+            reasons.push(
+                if self.diagnostics.downloader_check.outcome
+                    == crate::monitor::Outcome::ModulesUnavailable
+                {
+                    HealthReason::DownloaderModulesUnavailable
+                } else {
+                    HealthReason::DownloaderUnavailable
+                },
+            );
         }
         Health {
             ready: reasons.is_empty(),
@@ -320,6 +329,11 @@ mod tests {
         assert_eq!(
             status.health_at(102_000).reasons,
             vec![HealthReason::DownloaderUnavailable]
+        );
+        status.diagnostics.downloader_check.outcome = Outcome::ModulesUnavailable;
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::DownloaderModulesUnavailable]
         );
         status.diagnostics.downloader_check.outcome = Outcome::Passed;
         status.state = State::Degraded;

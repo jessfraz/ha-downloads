@@ -14,6 +14,7 @@ pub enum Outcome {
     TransportError,
     HttpError,
     InvalidResponse,
+    ModulesUnavailable,
     HealthFailed,
     UnsafeResolver,
     DnsLookupFailed,

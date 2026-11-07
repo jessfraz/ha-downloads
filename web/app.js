@@ -104,7 +104,7 @@
     panel.hidden = !monitoring?.checks;
     if (panel.hidden) return;
     const names = [["vpn_service", "VPN service"], ["vpn_health", "VPN health"], ["dns_service", "DNS service"], ["dns_lookup", "DNS lookup"], ["resolver", "Resolver configuration"], ["firewall", "Firewall"], ["downloader", "Downloader API"]];
-    const outcomes = { passed: "Passed", not_checked: "Not checked", stopped: "Stopped", timeout: "Request timed out", transport_error: "Request failed", http_error: "HTTP request rejected", invalid_response: "Invalid response", health_failed: "Health check failed", unsafe_resolver: "Resolver protection failed", dns_lookup_failed: "DNS lookup failed", firewall_failed: "Firewall check failed" };
+    const outcomes = { passed: "Passed", not_checked: "Not checked", stopped: "Stopped", timeout: "Request timed out", transport_error: "Request failed", http_error: "HTTP request rejected", invalid_response: "Invalid response", modules_unavailable: "Required native modules unavailable", health_failed: "Health check failed", unsafe_resolver: "Resolver protection failed", dns_lookup_failed: "DNS lookup failed", firewall_failed: "Firewall check failed" };
     const details = { not_ready: "not ready", icmp: "ICMP check", dns: "DNS check", tls: "TLS check", timeout: "timeout", connection: "connection check", connect: "connection failed", connection_refused: "connection refused", connection_reset: "connection reset", broken_pipe: "broken pipe", unexpected_eof: "connection closed", body: "response interrupted", other: "unspecified cause" };
     const describe = (check) => {
       if (!check || !Object.hasOwn(outcomes, check.outcome)) return "Unavailable";
@@ -162,6 +162,7 @@
     const stopping = status.state === "stopping";
     const failed = status.protection.kill_switch === "failed" || status.protection.dns === "failed";
     const queuePaused = status.downloader.paused === true;
+    const modulesUnavailable = status.health?.reasons.includes("downloader_modules_unavailable") === true;
     const message = status.message.slice(0, 1000);
 
     byId("setup").hidden = !setup;
@@ -194,7 +195,9 @@
         state === "verified" ? "success" : state === "failed" ? "failure" : "neutral");
     }
     const downloaderLabels = { running: queuePaused ? "Queue paused" : "Running", starting: "Starting", stopped: "Stopped" };
-    setCheck("downloader", downloaderLabels[status.downloader.state], status.downloader.state === "running"
+    setCheck("downloader", modulesUnavailable ? "Needs attention" : downloaderLabels[status.downloader.state], modulesUnavailable
+      ? "Required native modules are unavailable. Update the app."
+      : status.downloader.state === "running"
       ? queuePaused ? "Resume the queue in SABnzbd when ready." : status.downloader.paused === null ? "Queue managed in SABnzbd." : "SABnzbd is running."
       : status.downloader.state === "starting" ? "Starting SABnzbd." : "Waiting for a verified connection.",
     ready ? queuePaused ? "warning" : status.downloader.paused === false ? "success" : "neutral" : "neutral");
@@ -225,6 +228,9 @@
     } else if (failed) {
       setBanner("Protection check failed", message || "The connection checks need attention before downloads can open.", "Needs attention", "failure");
       showHelp("Check the app logs", "Review the VPN settings and app logs in Home Assistant. The downloads interface stays closed until all connection checks pass.");
+    } else if (modulesUnavailable) {
+      setBanner("Downloader needs attention", message, "Needs attention", "failure");
+      showHelp("Update the app", "The downloader's required native modules are unavailable. Install the corrected app version in Home Assistant.");
     } else if (status.state === "degraded" || status.state === "ready") {
       setBanner(vpnConnected ? "Downloads unavailable" : status.vpn.state === "unknown" ? "VPN status unavailable" : status.vpn.state === "unhealthy" ? "VPN health check failed" : "VPN connection interrupted",
         message || "The connection is not ready. Downloads will open again once the checks pass.", "Needs attention", "warning");

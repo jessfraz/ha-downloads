@@ -313,6 +313,7 @@ impl Children {
         .stderr(Stdio::null());
         self.downloader =
             Some(OwnedProcess::spawn(sab).map_err(|_| ServiceFailure::DownloaderStartFailed)?);
+        let mut modules_ready = ModuleReadiness::Unverified;
         let mut starting = Status::starting(&config.vpn.provider);
         starting.downloader.state = DownloaderState::Starting;
         starting.downloader.paused = None;
@@ -326,17 +327,35 @@ impl Children {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             self.check_children()?;
+            if modules_ready == ModuleReadiness::Unverified {
+                let mut modules = Command::new("/opt/venv/bin/python");
+                modules
+                    .args([
+                        "-c",
+                        "import json,sabnzbd.decoder; print(json.dumps({'modules_ready':sabnzbd.decoder.SABCTOOLS_ENABLED}))",
+                    ])
+                    .env_clear()
+                    .current_dir("/opt")
+                    .env("PYTHONPATH", "/opt")
+                    .env("PYTHONDONTWRITEBYTECODE", "1")
+                    .stdin(Stdio::null())
+                    .stderr(Stdio::null())
+                    .kill_on_drop(true);
+                // Only cache a verified native result from the immutable image.
+                // A transient failed self-check can retry during normal startup.
+                modules_ready = downloader_modules_ready(modules).await;
+            }
             let protection = tokio::select! { _ = shutdown.changed() => return Ok(()), value = probe.check() => value };
             let mut diagnostics = tracker.observe(protection.checks);
             if !protection.firewall() || !protection.dns_safe() {
                 status.send_modify(|value| value.diagnostics = diagnostics);
                 return Err(ServiceFailure::ProtectionChecksFailed.into());
             }
-            let check = downloader_check(&client, &downloader_url).await;
+            let check = downloader_check(&client, &downloader_url, modules_ready).await;
             diagnostics.downloader_check = check;
             diagnostics.downloader_checked_at_unix_ms = Some(unix_ms());
             status.send_modify(|value| value.diagnostics = diagnostics);
-            if check.passed() {
+            if matches!(check.outcome, Outcome::Passed | Outcome::ModulesUnavailable) {
                 break;
             }
             if Instant::now() >= deadline {
@@ -353,7 +372,8 @@ impl Children {
                 status.send_modify(|value| value.diagnostics = diagnostics);
                 return Err(ServiceFailure::ProtectionChecksFailed.into());
             }
-            diagnostics.downloader_check = downloader_check(&client, &downloader_url).await;
+            diagnostics.downloader_check =
+                downloader_check(&client, &downloader_url, modules_ready).await;
             diagnostics.downloader_checked_at_unix_ms = Some(unix_ms());
             status.send_modify(|value| value.diagnostics = diagnostics);
             publish(status, &config.vpn.provider, protection, &probe).await;
@@ -362,7 +382,36 @@ impl Children {
     }
 }
 
-async fn downloader_check(client: &reqwest::Client, url: &reqwest::Url) -> Check {
+#[derive(serde::Deserialize, serde::Serialize)]
+struct NativeModules {
+    modules_ready: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ModuleReadiness {
+    Unverified,
+    Ready,
+    Unavailable,
+}
+
+async fn downloader_modules_ready(mut command: Command) -> ModuleReadiness {
+    match timeout(Duration::from_secs(2), command.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            match serde_json::from_slice::<NativeModules>(&output.stdout) {
+                Ok(modules) if modules.modules_ready => ModuleReadiness::Ready,
+                Ok(_) => ModuleReadiness::Unavailable,
+                Err(_) => ModuleReadiness::Unverified,
+            }
+        }
+        _ => ModuleReadiness::Unverified,
+    }
+}
+
+async fn downloader_check(
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+    modules_ready: ModuleReadiness,
+) -> Check {
     #[derive(serde::Deserialize)]
     struct Version {
         version: String,
@@ -377,7 +426,11 @@ async fn downloader_check(client: &reqwest::Client, url: &reqwest::Url) -> Check
         Outcome::HttpError
     } else {
         match response.json::<Version>().await {
-            Ok(version) if !version.version.is_empty() => Outcome::Passed,
+            Ok(version) if !version.version.is_empty() => match modules_ready {
+                ModuleReadiness::Ready => Outcome::Passed,
+                ModuleReadiness::Unavailable => Outcome::ModulesUnavailable,
+                ModuleReadiness::Unverified => Outcome::NotChecked,
+            },
             Err(error) if error.is_timeout() => return request_failure(&error, started),
             _ => Outcome::InvalidResponse,
         }
@@ -474,7 +527,13 @@ async fn publish(
     if !status.diagnostics.downloader_check.passed() && status.state == crate::status::State::Ready
     {
         status.state = crate::status::State::Degraded;
-        status.message = "The downloader API is unavailable. Check the app diagnostics.".into();
+        status.message =
+            if status.diagnostics.downloader_check.outcome == Outcome::ModulesUnavailable {
+                "The downloader's required native modules are unavailable. Update the app."
+            } else {
+                "The downloader API is unavailable. Check the app diagnostics."
+            }
+            .into();
     }
     status.protection.kill_switch = if protection.firewall() {
         Verification::Verified
@@ -588,7 +647,10 @@ mod tests {
     use crate::{
         config::Config,
         monitor::{Check, Checks, Outcome, ServiceFailure},
-        runtime::{Children, OwnedProcess, downloader_check, run},
+        runtime::{
+            Children, ModuleReadiness, NativeModules, OwnedProcess, downloader_check,
+            downloader_modules_ready, run,
+        },
         status::{State, Status, VpnState},
         vpn::{Probe, Protection},
     };
@@ -605,10 +667,37 @@ mod tests {
             .no_proxy()
             .build()
             .expect("client");
-        for (code, body, expected) in [
-            (200, r#"{"version":"5.1.3"}"#, Outcome::Passed),
-            (200, r#"{"error":"unavailable"}"#, Outcome::InvalidResponse),
-            (503, "unavailable", Outcome::HttpError),
+        for (code, body, modules, expected) in [
+            (
+                200,
+                r#"{"version":"5.1.3"}"#,
+                ModuleReadiness::Ready,
+                Outcome::Passed,
+            ),
+            (
+                200,
+                r#"{"version":"5.1.3"}"#,
+                ModuleReadiness::Unavailable,
+                Outcome::ModulesUnavailable,
+            ),
+            (
+                200,
+                r#"{"version":"5.1.3"}"#,
+                ModuleReadiness::Unverified,
+                Outcome::NotChecked,
+            ),
+            (
+                200,
+                r#"{"error":"unavailable"}"#,
+                ModuleReadiness::Ready,
+                Outcome::InvalidResponse,
+            ),
+            (
+                503,
+                "unavailable",
+                ModuleReadiness::Ready,
+                Outcome::HttpError,
+            ),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
             let url = format!("http://{}/", listener.local_addr().expect("address"))
@@ -623,10 +712,34 @@ mod tests {
                     body.len()
                 ).as_bytes()).await.expect("response");
             });
-            let check = downloader_check(&client, &url).await;
+            let check = downloader_check(&client, &url, modules).await;
             assert_eq!(check.outcome, expected);
             assert_eq!(check.http_status, Some(code));
             task.await.expect("server");
+        }
+    }
+
+    #[tokio::test]
+    async fn native_modules_require_a_successful_structured_self_check() {
+        for (ready, expected) in [
+            (true, ModuleReadiness::Ready),
+            (false, ModuleReadiness::Unavailable),
+        ] {
+            let response = serde_json::to_string(&NativeModules {
+                modules_ready: ready,
+            })
+            .expect("response");
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "printf '%s' \"$1\"", "modules", &response]);
+            assert_eq!(downloader_modules_ready(command).await, expected);
+        }
+        for script in ["printf invalid", "exit 1"] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", script]);
+            assert_eq!(
+                downloader_modules_ready(command).await,
+                ModuleReadiness::Unverified
+            );
         }
     }
 

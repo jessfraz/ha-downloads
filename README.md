@@ -35,9 +35,10 @@ port mapping or additional app permission is needed. The adapter follows the
 app's current internal address through Supervisor. Expose its problem sensor
 to Assist to opt in; queries still require the user's entity read permission.
 
-Functional readiness requires fresh VPN, firewall, DNS and downloader API
-checks. An idle or deliberately paused queue is healthy. Failed status reads
-make the entity unavailable instead of claiming the downloads are protected.
+Functional readiness combines current VPN, firewall, DNS and downloader API
+checks with SAB's own decoder compatibility check. Idle or deliberately paused
+queues stay healthy. Failed status reads make the entity unavailable instead of
+claiming the downloads are protected.
 
 Open **Diagnostic details** in the panel for individual check results and the
 most recent failed-check period, including after recovery. A stopped VPN
