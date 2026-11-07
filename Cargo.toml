@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 description = "VPN-protected Usenet downloads for Home Assistant"
 repository = "https://github.com/jessfraz/ha-downloads"
+default-run = "downloads"
 
 [[bin]]
 name = "downloads"

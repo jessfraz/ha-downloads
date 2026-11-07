@@ -168,7 +168,9 @@ async def test_native_assist_requires_exposure_user_read_permission_and_current_
     assert result.error
     assert result.data["error"] == "not_exposed"
     # A cached tool cannot turn a missing assistant into an HTTP-style query.
-    without_assistant = replace(api, llm_context=replace(api.llm_context, assistant=None))
+    without_assistant = replace(
+        api, llm_context=replace(api.llm_context, assistant=None)
+    )
     result = await without_assistant.async_call_tool(
         ToolInput(tool_name="downloads__health", tool_args={})
     )
