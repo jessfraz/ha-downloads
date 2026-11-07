@@ -343,7 +343,18 @@ exec sleep 600
         "ip route replace default via 198.19.0.2; "
         "ip -6 route replace default via fd12:3456:789a::3; exec sleep 600",
     )
-    execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "control")
+    # The IPv4 listener can be ready before the fixture's IPv6 route is usable.
+    # Require every unprotected control path before starting the protected app.
+    wait(
+        lambda: (
+            execute(
+                control, "/opt/venv/bin/python", "/fixture/probe.py", "control", check=False
+            ).returncode
+            == 0
+        ),
+        "unprotected IPv4, IPv6 and DNS control paths",
+        seconds=30,
+    )
     # Native Linux bind mounts retain the host UID. Transfer only this fixture's
     # two generated files and their private directories to the app's root user.
     helper = docker(
@@ -450,8 +461,8 @@ else:
 from configobj import ConfigObj
 c=ConfigObj('/data/sabnzbd/sabnzbd.ini');key=c['misc']['api_key']
 base='http://127.0.0.1:8081/sabnzbd/api?'
-def call(mode):
- query=urllib.parse.urlencode({'apikey':key,'mode':mode,'output':'json'})
+def call(mode, **params):
+ query=urllib.parse.urlencode({'apikey':key,'mode':mode,'output':'json',**params})
  return json.load(urllib.request.urlopen(base+query))
 """
     execute(
@@ -523,6 +534,17 @@ def call(mode):
     assert json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout) == unpaused_sab
     print(json.dumps({"running_queue_recovered": True}), flush=True)
     execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "up")
+    # Set the next-start policy through SAB's native API without pausing the
+    # current queue. The same policy must survive terminal cleanup and restart.
+    execute(
+        app,
+        "/opt/venv/bin/python",
+        "-c",
+        sab_api
+        + "policy=call('set_config',section='misc',keyword='start_paused',value='1')\n"
+        + "assert policy['config']['misc']['start_paused'] == 1\n"
+        + "assert call('queue')['queue']['paused'] is False",
+    )
     # Abrupt loss of Gluetun must stop SAB; it cannot leave a downloader behind.
     execute(
         app,
@@ -574,16 +596,7 @@ print(json.dumps(children))
         ).stdout
     )
     assert children == [], children
-    # With both services stopped, change only SAB's own startup preference in
-    # this fixture's persistent config, then restart the same production app.
-    execute(
-        app,
-        "/opt/venv/bin/python",
-        "-c",
-        "from configobj import ConfigObj;"
-        "c=ConfigObj('/data/sabnzbd/sabnzbd.ini');"
-        "c['misc']['start_paused']=True;c.write()",
-    )
+    # Restart the same production app with SAB's persisted startup preference.
     docker("restart", "--time", "15", app)
     wait(lambda: is_state(app, "ready"), "restart honors native startup preference")
     assert app_health(app) == 200
