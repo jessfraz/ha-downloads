@@ -18,6 +18,23 @@ health sensor and five readiness indicators are projections, not per-episode
 entities. Expired evidence becomes stale/unknown even between polling cycles.
 Native settings are resolved by the Rust service, never selected or stored in HA.
 
+## Repairs
+
+Confirmed protection, downloader, and media-service failures appear in
+**Settings → System → Repairs**, with native app logs and integration diagnostics
+links. Routine new-version notices do not create service Repairs; failed update
+checks and other native health problems still do. No extra notification or
+monitoring app is installed.
+
+Repairs contain bounded failure codes, not native messages, origins, credentials,
+or media details. A stale or unavailable observation does not clear a confirmed
+failure. Fresh healthy evidence clears the relevant issue. A fresh unconfigured
+component ends its monitoring obligation and clears that component's issue.
+Normal unload/reload keeps unresolved issues; removing the configuration entry
+removes its Repairs. A late response cannot change an unloaded entry's issues.
+Rejected integration credentials use Home Assistant's existing reauthentication
+flow. Repairs never change settings, resume queues, or restart services.
+
 ## Existing protection-health installations
 
 Existing app-slug-only entries migrate in place without credentials, a new
@@ -136,9 +153,9 @@ receipts; this integration does not duplicate them.
 ## Validation
 
 The separate, locked Python test project keeps HA dependencies out of the
-SABnzbd runtime. It uses Core 2026.10.1,
-`pytest-homeassistant-custom-component` 0.13.372 and Ruff 0.17.3. Tests run the actual Core
-flow manager, entity registry, native service calls, HTTP authentication/bridge,
+SABnzbd runtime. It uses Core and the official `pytest-homeassistant` 2026.11.0
+fixture, plus Ruff 0.17.3. Tests run the actual Core
+flow manager, entity and issue registries, native service calls, HTTP authentication/bridge,
 Assist discovery/schema converter, health-only migration and same-entry
 pairing, and bounded HTTP transport against fictional service records.
 
@@ -153,7 +170,7 @@ Core's authenticated bridge, with fictional managers and no provider access:
 ```sh
 HA_DOWNLOADS_TEST_PYTHON="$PWD/integration/.venv/bin/python" \
   cargo test --locked --lib \
-  media::tests::real_home_assistant_bridge_uses_live_rust_contract \
+  media::tests::real_home_assistant_ \
   -- --ignored --nocapture
 ```
 

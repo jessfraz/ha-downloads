@@ -12,6 +12,7 @@ from .const import CONF_ADDON_SLUG, CONF_BACKEND_URL, CONF_TOKEN, DOMAIN
 from .coordinator import DownloadsCoordinator
 from .http import DownloadsHealthView, DownloadsView
 from .native_health import NativeHealthCoordinator
+from .repairs import async_remove
 from .services import async_register_services
 
 type DownloadsConfigEntry = ConfigEntry[DownloadsCoordinator | NativeHealthCoordinator]
@@ -68,6 +69,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: DownloadsConfigEntry) ->
         entry.runtime_data = native_health
         platforms = HEALTH_PLATFORMS
     await hass.config_entries.async_forward_entry_setups(entry, platforms)
+    # Repairs are entry-owned coordinator consumers, independent of entity
+    # enablement. Their listeners also receive the existing local expiry events.
+    coordinators = [entry.runtime_data]
+    if isinstance(entry.runtime_data, DownloadsCoordinator) and native_health is not None:
+        coordinators.append(native_health)
+    for health in coordinators:
+        entry.async_on_unload(health.async_add_listener(health.async_reconcile_repairs))
+        health.async_reconcile_repairs()
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     return True
 
@@ -88,3 +97,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: DownloadsConfigEntry) -
     if isinstance(entry.runtime_data, DownloadsCoordinator):
         entry.runtime_data.async_cancel_expiry()
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: DownloadsConfigEntry) -> None:
+    """Remove only the Repairs owned by this configuration entry."""
+    async_remove(hass, entry)

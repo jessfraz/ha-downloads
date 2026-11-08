@@ -9,7 +9,7 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
 from homeassistant.util.json import JsonObjectType
-from pytest_homeassistant_custom_component.common import MockUser
+from pytest_homeassistant.common import MockUser
 
 from custom_components.downloads import DownloadsConfigEntry
 from custom_components.downloads.access import gateway_entity_id

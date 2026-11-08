@@ -16,6 +16,7 @@ from .client import Actor, DownloadsClient, ResponseTooLarge
 from .const import API_PREFIX, DOMAIN
 from .models import HealthSnapshot, System
 from .native_health import NativeHealthCoordinator
+from .repairs import async_clear, async_report, async_update_components
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
             always_update=False,
         )
         self.client = client
+        self.entry = entry
         self.native_health = native_health
         self.system: System | None = None
         self._cancel_expiry: Callable[[], None] | None = None
@@ -54,6 +56,17 @@ class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
         if self._cancel_expiry is not None:
             self._cancel_expiry()
             self._cancel_expiry = None
+
+    async def async_shutdown(self) -> None:
+        """A stopped owner cannot reconcile late reads or expire cached Repairs."""
+        self.async_cancel_expiry()
+        await super().async_shutdown()
+
+    @callback
+    def async_reconcile_repairs(self) -> None:
+        """The entry is a health consumer even when its entities are disabled."""
+        if not self._shutdown_requested and self.last_update_success and self.data is not None:
+            async_update_components(self.hass, self.entry, self.data, now_ms())
 
     @callback
     def _schedule_expiry(self, data: HealthSnapshot) -> None:
@@ -71,7 +84,7 @@ class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
     def _expired(self, _now: object) -> None:
         """Invalidate cached entity values exactly when their evidence expires."""
         self._cancel_expiry = None
-        if self.data is not None:
+        if not self._shutdown_requested and self.data is not None:
             self.async_update_listeners()
             self._schedule_expiry(self.data)
 
@@ -93,8 +106,25 @@ class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
             if response.status != 200:
                 raise UpdateFailed("Cannot read Downloads health")
             data = HealthSnapshot.parse(response.json())
-        except ClientError, TimeoutError, ResponseTooLarge, ValueError:
+        except ConfigEntryAuthFailed:
+            # Core owns the credential reauth flow and its native Repair.
+            if not self._shutdown_requested:
+                async_clear(self.hass, self.entry, "media_connection")
+            raise
+        except UpdateFailed, ClientError, TimeoutError, ResponseTooLarge, ValueError:
+            if not self._shutdown_requested:
+                async_report(
+                    self.hass,
+                    self.entry,
+                    "media_connection",
+                    "Downloads media health",
+                    ("health_unavailable",),
+                    unknown=True,
+                )
             raise UpdateFailed("Cannot read Downloads health") from None
-        self.system = system
-        self._schedule_expiry(data)
+        # Core stops scheduling on unload but does not cancel an in-flight read.
+        # Its former owner must not change Repairs or recreate the expiry timer.
+        if not self._shutdown_requested:
+            self.system = system
+            self._schedule_expiry(data)
         return data

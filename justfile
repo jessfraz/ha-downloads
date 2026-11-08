@@ -29,7 +29,7 @@ ha:
     DOWNLOADS_TEST_BINARY="$PWD/target/debug/ha-downloads" uv run --project integration --frozen pytest -q -c integration/pyproject.toml tests_ha
     uv run --project integration --frozen ruff check --config integration/pyproject.toml custom_components/downloads tests_ha
     uv run --project integration --frozen ruff format --check --config integration/pyproject.toml custom_components/downloads tests_ha
-    HA_DOWNLOADS_TEST_PYTHON="$PWD/integration/.venv/bin/python" cargo test --locked --lib media::tests::real_home_assistant_bridge_uses_live_rust_contract -- --ignored --nocapture
+    HA_DOWNLOADS_TEST_PYTHON="$PWD/integration/.venv/bin/python" cargo test --locked --lib media::tests::real_home_assistant_ -- --ignored --nocapture
 
 security:
     cargo deny --config .github/deny.toml check advisories licenses sources

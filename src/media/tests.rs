@@ -23,6 +23,7 @@ const ADMIN: &str = "administrator-test-token-0000000000000000";
 const INTEGRATION: &str = "integration-test-token-000000000000000000";
 #[derive(Default)]
 struct NativeState {
+    health: Vec<NativeHealthCheck>,
     quality_profiles: Vec<UpNamed>,
     roots: Vec<UpRoot>,
     calls: Vec<(String, String)>,
@@ -38,6 +39,13 @@ struct NativeState {
     queue_unavailable: bool,
     import_on_monitor: bool,
     unmonitor_on_import: bool,
+}
+#[derive(Clone, Serialize)]
+struct NativeHealthCheck {
+    source: String,
+    #[serde(rename = "type")]
+    severity: String,
+    message: String,
 }
 struct Native {
     url: String,
@@ -180,11 +188,13 @@ async fn handle_native(mut stream: TcpStream, state: Arc<Mutex<NativeState>>) {
         return;
     }
     let bytes = match (method, path) {
-        ("GET", "/api/v3/system/status") => serde_json::to_vec(&UpStatus {
-            version: "fixture-1".into(),
-        })
-        .unwrap(),
-        ("GET", "/api/v3/health") => serde_json::to_vec(&Vec::<UpHealth>::new()).unwrap(),
+        ("GET", "/api/v3/system/status" | "/api/v1/system/status") => {
+            serde_json::to_vec(&UpStatus {
+                version: "fixture-1".into(),
+            })
+            .unwrap()
+        }
+        ("GET", "/api/v3/health" | "/api/v1/health") => serde_json::to_vec(&guard.health).unwrap(),
         ("GET", "/api/v3/qualityprofile") => serde_json::to_vec(&guard.quality_profiles).unwrap(),
         ("GET", "/api/v3/rootfolder") => serde_json::to_vec(&guard.roots).unwrap(),
         ("GET", "/api/v3/tag") => serde_json::to_vec(&Vec::<UpTag>::new()).unwrap(),
@@ -1792,4 +1802,114 @@ async fn real_home_assistant_bridge_uses_live_rust_contract() {
         .unwrap();
     assert!(status.success());
     harness.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires HA_DOWNLOADS_TEST_PYTHON pointing to the HA test environment"]
+async fn real_home_assistant_repairs_use_native_manager_health() {
+    let python = std::env::var("HA_DOWNLOADS_TEST_PYTHON").expect("HA test Python is required");
+    fn check(source: &str, severity: &str, message: &str) -> NativeHealthCheck {
+        NativeHealthCheck {
+            source: source.into(),
+            severity: severity.into(),
+            message: message.into(),
+        }
+    }
+    for (checks, expected) in [
+        (
+            vec![check(
+                "UpdateCheck",
+                "warning",
+                "New update is available: v2.7.0.5723",
+            )],
+            None,
+        ),
+        (
+            vec![check(
+                "UpdateCheck",
+                "warning",
+                "Unable to check for updates",
+            )],
+            Some(HealthIssueCode::UpstreamHealth),
+        ),
+        (
+            vec![check(
+                "UpdateCheck",
+                "error",
+                "New update is available: v2.7.0.5723",
+            )],
+            Some(HealthIssueCode::UpstreamHealth),
+        ),
+        (
+            vec![check(
+                "UpdateCheck",
+                "warning",
+                "New update is available: v2.7.0.5723 (unknown)",
+            )],
+            Some(HealthIssueCode::UpstreamHealth),
+        ),
+        (
+            vec![
+                check(
+                    "UpdateCheck",
+                    "warning",
+                    "New update is available: v2.7.0.5723",
+                ),
+                check("DownloadClientCheck", "error", "Private native details"),
+            ],
+            Some(HealthIssueCode::DownloadClientUnavailable),
+        ),
+    ] {
+        let healthy = expected.is_none();
+        let mut harness = Harness::new().await;
+        harness.native.state.lock().await.health = checks;
+        harness.config.prowlarr = harness.config.radarr.clone();
+        harness.restart().await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot = harness.service.health_snapshot(None).await.unwrap();
+            if let Some(component) = snapshot.components.iter().find(|item| {
+                item.component == Component::Prowlarr
+                    && matches!(item.observation, Observation::Observed { .. })
+            }) {
+                assert!(
+                    matches!(
+                        component.observation,
+                        Observation::Observed {
+                            outcome: HealthOutcome::Healthy,
+                            ..
+                        }
+                    ) == healthy,
+                    "only the exact routine release notice is excluded from service faults"
+                );
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let status = tokio::process::Command::new(&python)
+            .args([
+                "-m",
+                "pytest",
+                "-q",
+                "-c",
+                "integration/pyproject.toml",
+                "tests_ha/test_rust_repairs.py",
+            ])
+            .env("DOWNLOADS_INTEROP_URL", &harness.url)
+            .env("DOWNLOADS_INTEROP_TOKEN", INTEGRATION)
+            .env(
+                "DOWNLOADS_INTEROP_HEALTHY",
+                if healthy { "true" } else { "false" },
+            )
+            .env(
+                "DOWNLOADS_INTEROP_CODE",
+                expected.map(|code| code.to_string()).unwrap_or_default(),
+            )
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+        harness.close().await;
+    }
 }

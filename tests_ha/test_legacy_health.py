@@ -13,11 +13,11 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.llm import APIInstance, LLMContext, ToolInput, async_get_api
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockUser,
     async_fire_time_changed,
 )
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.downloads import DownloadsConfigEntry
 from custom_components.downloads.const import CONF_ADDON_SLUG, DOMAIN

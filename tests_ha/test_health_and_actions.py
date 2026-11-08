@@ -6,7 +6,7 @@ from datetime import timedelta
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockUser,
     async_fire_time_changed,
 )

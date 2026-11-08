@@ -1,5 +1,5 @@
 name: Downloads
-version: "0.3.0"
+version: "0.3.1"
 slug: downloads
 description: Movies and TV with saved Radarr/Sonarr settings and VPN-protected downloads
 url: https://github.com/jessfraz/ha-downloads
