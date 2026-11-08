@@ -22,6 +22,11 @@ Proxied SABnzbd API requests retain SABnzbd's API-key checks. The CONNECT
 proxy is for trusted internal clients and has no default host port mapping.
 Mapping a port does not make it safe for an untrusted network.
 
+Supervisor discovery uses its documented private `http://supervisor` API.
+The client fixes the two endpoint paths and disables proxies and redirects.
+This platform transport is separate from configurable manager connections;
+the Supervisor token and private app network remain trusted HA infrastructure.
+
 Secrets belong in masked HA options, private `/data` state, and private runtime
 files. Do not log option values, raw upstream errors, credentials, API keys, or
 proxy URLs containing credentials. Cold backups contain secrets and need

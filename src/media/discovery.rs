@@ -1,4 +1,9 @@
 //! Publish only the adapter credential through Supervisor's scoped discovery API.
+//!
+//! Supervisor documents these fixed endpoints as HTTP on its private app
+//! network: https://contributors.home-assistant.io/apps/guides/communication/
+//! Its scoped token and native network are the platform trust boundary. This
+//! client disables ambient proxies and redirects for both platform requests.
 use crate::media::upstream::read_bytes;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
