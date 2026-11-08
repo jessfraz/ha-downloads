@@ -54,6 +54,8 @@ reachable without the VPN. Hostnames and external manager traffic require
 current protection checks before lookup or connection, and stay subject to
 the VPN firewall. Optional `media.prowlarr` and `media.plex` connections add
 health observations, not a prerequisite for every request.
+Plex's identity health check accepts a URL without an API key; a configured
+Plex token is optional and is sent only to that server.
 
 In the Downloads sidebar, create saved profiles from the manager's actual
 quality profiles, roots and tags. A request pins the selected profile revision
@@ -71,8 +73,13 @@ The SABnzbd browser/settings remain administrator-only.
 For native CLI/API access, set independent, distinct role credentials of at
 least 32 characters: `api_token` is read-only, `media.request_token` permits
 requests, and `media.admin_token` permits saved-profile writes. The dedicated
-`media.integration_token` is only for the optional HA companion. It cannot edit
-profiles or access SABnzbd. Never reuse a HA token or manager key as a role token.
+`media.integration_token` is only for the optional HA companion. In HA, leaving
+it blank generates a stable app-owned credential under
+`/data/media/integration-token`, shared only through Supervisor discovery.
+An explicit value overrides that credential for manual/standalone pairing.
+It cannot edit profiles or access SABnzbd. Never reuse a HA token or manager key
+as a role token. Native app backups preserve the generated credential; do not
+delete private app state to repair pairing.
 
 Install the [native companion](../integration/README.md) through HACS/manual
 custom integration, then confirm discovery or pair the native app origin.

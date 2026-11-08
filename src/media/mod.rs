@@ -1,4 +1,6 @@
 mod catalog;
+#[cfg(unix)]
+pub(crate) mod credentials;
 pub mod discovery;
 mod health;
 pub mod http;

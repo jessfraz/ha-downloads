@@ -63,7 +63,12 @@ impl MediaConfig {
                 return Err(ConfigError::Media);
             }
         }
-        for connection in [&self.radarr, &self.sonarr, &self.prowlarr, &self.plex] {
+        for (connection, key_required) in [
+            (&self.radarr, true),
+            (&self.sonarr, true),
+            (&self.prowlarr, true),
+            (&self.plex, false),
+        ] {
             if connection.url.is_empty() && connection.api_key.is_empty() {
                 continue;
             }
@@ -74,7 +79,7 @@ impl MediaConfig {
                 || url.password().is_some()
                 || url.query().is_some()
                 || url.fragment().is_some()
-                || connection.api_key.is_empty()
+                || (key_required && connection.api_key.is_empty())
                 || connection.api_key.chars().any(char::is_control)
                 || connection.api_key.len() > 4096
             {
@@ -177,11 +182,52 @@ pub enum ConfigError {
         "Media connections need valid HTTP(S) URLs and credentials; API role tokens must be distinct and at least 32 characters."
     )]
     Media,
+    #[error(
+        "Cannot load private app pairing credentials. Existing credentials must remain private and valid."
+    )]
+    ManagedCredential,
 }
+
+struct AppRuntime {
+    linux: bool,
+    process_id: u32,
+    supervisor_available: bool,
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        Self::load_for_runtime(
+            path,
+            AppRuntime {
+                linux: cfg!(target_os = "linux"),
+                process_id: std::process::id(),
+                supervisor_available: std::env::var_os("SUPERVISOR_TOKEN")
+                    .is_some_and(|token| !token.is_empty()),
+            },
+        )
+    }
+
+    fn load_for_runtime(path: &Path, runtime: AppRuntime) -> Result<Self, ConfigError> {
         let bytes = Zeroizing::new(std::fs::read(path).map_err(|_| ConfigError::Read)?);
-        serde_json::from_slice(&bytes).map_err(|_| ConfigError::Parse)
+        let mut config: Self = serde_json::from_slice(&bytes).map_err(|_| ConfigError::Parse)?;
+        if runtime.linux
+            && runtime.process_id == 1
+            && runtime.supervisor_available
+            && config.media.integration_token.is_empty()
+        {
+            #[cfg(unix)]
+            {
+                let directory = path
+                    .parent()
+                    .ok_or(ConfigError::ManagedCredential)?
+                    .join("media");
+                config.media.integration_token =
+                    crate::media::credentials::load_or_create(&directory)?;
+            }
+            #[cfg(not(unix))]
+            return Err(ConfigError::ManagedCredential);
+        }
+        Ok(config)
     }
     pub fn is_configured(&self) -> bool {
         !self.vpn.provider.is_empty()
@@ -254,7 +300,7 @@ impl Config {
 }
 #[cfg(test)]
 mod tests {
-    use crate::config::{Config, ConfigError};
+    use crate::config::{AppRuntime, Config, ConfigError, MediaConfig, MediaConnection};
     fn configured() -> Config {
         serde_json::from_str(r#"{"vpn":{"provider":"test","username":"user","password":"secret"}}"#)
             .expect("fixture")
@@ -295,5 +341,132 @@ mod tests {
         let mut c = configured();
         c.vpn.password.push('\n');
         assert!(matches!(c.validate(), Err(ConfigError::UnsafeValue)));
+    }
+
+    #[test]
+    fn plex_identity_allows_an_optional_key_without_weakening_arr_credentials_or_urls() {
+        let mut media = MediaConfig::default();
+        media.plex.url = "http://plex.example:32400".into();
+        assert!(media.validate("").is_ok());
+        media.plex.api_key.push_str("fixture-key");
+        assert!(media.validate("").is_ok());
+        media.plex.url.clear();
+        assert!(matches!(media.validate(""), Err(ConfigError::Media)));
+        media.plex.api_key.clear();
+        for url in [
+            "ftp://plex.example",
+            "http://user:password@plex.example",
+            "http://plex.example?key=value",
+            "http://plex.example/#fragment",
+        ] {
+            media.plex.url = url.into();
+            assert!(matches!(media.validate(""), Err(ConfigError::Media)));
+        }
+        let connection = MediaConnection {
+            url: "http://media.example".into(),
+            ..MediaConnection::default()
+        };
+        for media in [
+            MediaConfig {
+                radarr: connection.clone(),
+                ..MediaConfig::default()
+            },
+            MediaConfig {
+                sonarr: connection.clone(),
+                ..MediaConfig::default()
+            },
+            MediaConfig {
+                prowlarr: connection,
+                ..MediaConfig::default()
+            },
+        ] {
+            assert!(matches!(media.validate(""), Err(ConfigError::Media)));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_pairing_is_generated_only_at_the_home_assistant_runtime_boundary() {
+        for runtime in [
+            AppRuntime {
+                linux: false,
+                process_id: 1,
+                supervisor_available: true,
+            },
+            AppRuntime {
+                linux: true,
+                process_id: 2,
+                supervisor_available: true,
+            },
+            AppRuntime {
+                linux: true,
+                process_id: 1,
+                supervisor_available: false,
+            },
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("options.json");
+            std::fs::write(&path, b"{}").unwrap();
+            let config = Config::load_for_runtime(&path, runtime).unwrap();
+            assert!(config.media.integration_token.is_empty());
+            assert!(!directory.path().join("media").exists());
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("options.json");
+        let options = r#"{"vpn":{"provider":"test","username":"fixture","password":"fixture"},"api_token":"readonly-fixture-aaaaaaaaaaaaaaaa","media":{"request_token":"request-fixture-aaaaaaaaaaaaaaaaa","admin_token":"admin-fixture-aaaaaaaaaaaaaaaaaaa"}}"#;
+        std::fs::write(&path, options).unwrap();
+        let original: Config = serde_json::from_str(options).unwrap();
+        let config = Config::load_for_runtime(
+            &path,
+            AppRuntime {
+                linux: true,
+                process_id: 1,
+                supervisor_available: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(config.media.integration_token.len(), 64);
+        assert!(config.api_token == original.api_token);
+        assert!(config.media.request_token == original.media.request_token);
+        assert!(config.media.admin_token == original.media.admin_token);
+        assert!(config.validate().is_ok());
+        let reopened = Config::load_for_runtime(
+            &path,
+            AppRuntime {
+                linux: true,
+                process_id: 1,
+                supervisor_available: true,
+            },
+        )
+        .unwrap();
+        assert!(config.media.integration_token == reopened.media.integration_token);
+        // Loading never rewrites HA-managed options with the generated secret.
+        assert!(std::fs::read_to_string(&path).unwrap() == options);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_explicit_integration_token_does_not_read_or_replace_managed_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("options.json");
+        let media = directory.path().join("media");
+        std::fs::create_dir(&media).unwrap();
+        let managed = media.join("integration-token");
+        std::fs::write(&managed, b"corrupt-state").unwrap();
+        let options = r#"{"media":{"integration_token":"manual-fixture-aaaaaaaaaaaaaaaaaa"}}"#;
+        std::fs::write(&path, options).unwrap();
+        let original: Config = serde_json::from_str(options).unwrap();
+        let config = Config::load_for_runtime(
+            &path,
+            AppRuntime {
+                linux: true,
+                process_id: 1,
+                supervisor_available: true,
+            },
+        )
+        .unwrap();
+        assert!(config.media.integration_token == original.media.integration_token);
+        assert!(std::fs::read(&managed).unwrap() == b"corrupt-state");
     }
 }

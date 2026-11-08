@@ -202,13 +202,11 @@ impl MediaService {
                 .timeout(Duration::from_secs(5))
                 .build()
                 .map_err(|_| ())?;
-            let response = client
-                .get(url)
-                .header("X-Plex-Token", &*connection.api_key)
-                .header("Accept", "application/json")
-                .send()
-                .await
-                .map_err(|_| ())?;
+            let mut request = client.get(url).header("Accept", "application/json");
+            if !connection.api_key.is_empty() {
+                request = request.header("X-Plex-Token", &*connection.api_key);
+            }
+            let response = request.send().await.map_err(|_| ())?;
             if !response.status().is_success() {
                 return Err(());
             }

@@ -28,6 +28,11 @@ credentials, or the SAB proxy. Native requester/admin tokens need no actor
 headers. Admin ingress remains admin; optional non-admin ingress requesting
 requires its user ID in `media.requester_user_ids`.
 
+The native HA app generates a stable private integration credential when its
+option is blank, following the other HA apps' Supervisor pairing pattern.
+Standalone deployments require an explicit integration token. Generated app
+state is owner-only and covered by native backups; options are never rewritten.
+
 The HA integration alone supplies `X-Downloads-Actor-Id` and
 `X-Downloads-Actor-Can-Request: true|false` with its dedicated integration
 credential, after resolving the active HA user and checking entity permission

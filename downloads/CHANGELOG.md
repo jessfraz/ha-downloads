@@ -4,6 +4,8 @@ Search and request movies or exact TV seasons with saved Radarr/Sonarr profiles
 in the Downloads sidebar. Add typed media APIs, durable request recovery,
 component health, native Assist tools, and CLI media commands. Keep existing
 health, status, problem sensor, and CLI contracts compatible.
+Pair through Supervisor using a stable private app credential, with no manual
+token provisioning. Check Plex identity health without requiring a token.
 
 # 0.1.7
 

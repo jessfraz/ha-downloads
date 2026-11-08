@@ -4,8 +4,10 @@ Install `custom_components/downloads` through HACS or the normal custom
 integration directory, then add **Downloads** under Devices & services.
 **Protection health only** needs just the installed Supervisor app. To add
 media capabilities, pair the running app through confirmed Supervisor
-discovery, or enter its native HTTP(S) origin and dedicated
-`media.integration_token`. An ingress URL, HA
+discovery. The HA app generates and preserves its private pairing credential,
+so no token copy or external secret provisioning is needed. Standalone pairing
+uses the native HTTP(S) origin and an explicit `media.integration_token`.
+An ingress URL, HA
 token, status token, requester token, or administrator token is not a pairing
 credential. Tokens never belong in YAML examples, Git, or shell history.
 

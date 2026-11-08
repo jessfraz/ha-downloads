@@ -69,6 +69,8 @@ belong in this repository.
 - Optional HA companion: config entries, cached health entities, native actions,
   scoped Assist tools, and fixed read/request bridge. No second scheduler or
   library mirror. Request opt-in and Assist exposure remain HA-owned.
+  The native app preserves its owner-only pairing credential under `/data/media`
+  and announces it only through Supervisor; standalone pairing is explicit.
 
 ## Durable media requests
 
