@@ -29,14 +29,6 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 b"src='../' style='width:100%;height:900px;border:0'></iframe></html>"
             )
             content_type = "text/html; charset=utf-8"
-        elif relative == "sabnzbd/":
-            content = (
-                b"<!doctype html><html lang='en'><title>Queue fixture</title>"
-                b"<style>body{font:16px system-ui;padding:24px}</style>"
-                b"<h1>SABnzbd queue fixture</h1>"
-                b"<label>Search queue <input type='search'></label></html>"
-            )
-            content_type = "text/html; charset=utf-8"
         elif relative in ASSETS:
             filename, content_type = ASSETS[relative]
             content = (WEB_ROOT / filename).read_bytes()

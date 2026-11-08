@@ -283,6 +283,8 @@ pub struct UpMovie {
     #[serde(default)]
     pub path: String,
     #[serde(default)]
+    pub minimum_availability: String,
+    #[serde(default)]
     pub monitored: bool,
     #[serde(default)]
     pub has_file: bool,

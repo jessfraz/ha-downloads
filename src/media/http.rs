@@ -4,8 +4,8 @@ use crate::{
     media::{model::*, service::MediaService},
 };
 use dropshot::{
-    ApiDescription, Body, ErrorStatusCode, HttpError, HttpResponseAccepted, HttpResponseCreated,
-    HttpResponseHeaders, HttpResponseOk, Path, Query, RequestContext, TypedBody, endpoint,
+    ApiDescription, Body, ErrorStatusCode, HttpError, HttpResponseAccepted, HttpResponseHeaders,
+    HttpResponseOk, Path, Query, RequestContext, TypedBody, endpoint,
 };
 use http::Response;
 use schemars::JsonSchema;
@@ -212,29 +212,26 @@ pub(crate) fn error(code: ApiErrorCode) -> HttpError {
             ErrorStatusCode::SERVICE_UNAVAILABLE
         }
         ApiErrorCode::InvalidUpstreamResponse => ErrorStatusCode::BAD_GATEWAY,
-        ApiErrorCode::ProfileRevisionConflict
+        ApiErrorCode::NativeSettingsRequired
         | ApiErrorCode::ExistingSettingsConflict
         | ApiErrorCode::IdempotencyConflict => ErrorStatusCode::CONFLICT,
-        ApiErrorCode::RevisionConflict => ErrorStatusCode::PRECONDITION_FAILED,
         ApiErrorCode::PreconditionRequired => ErrorStatusCode::PRECONDITION_REQUIRED,
-        ApiErrorCode::InvalidScope | ApiErrorCode::AmbiguousOperationTarget => {
-            ErrorStatusCode::UNPROCESSABLE_ENTITY
-        }
+        ApiErrorCode::InvalidScope => ErrorStatusCode::UNPROCESSABLE_ENTITY,
         _ => ErrorStatusCode::BAD_REQUEST,
     };
     let message = match code {
         ApiErrorCode::AuthenticationRequired => "A valid API bearer token is required.",
         ApiErrorCode::PermissionDenied => "This credential or user cannot perform this operation.",
         ApiErrorCode::NotFound => "The requested item was not found.",
-        ApiErrorCode::NotConfigured => "Configure the required media connection or profile first.",
+        ApiErrorCode::NotConfigured => "Configure the required media connection first.",
         ApiErrorCode::UpstreamUnavailable => {
             "The required service or storage is unavailable. An uncertain write must be reconciled, not repeated with a new key."
         }
         ApiErrorCode::InvalidUpstreamResponse => {
             "A service returned an invalid or oversized response."
         }
-        ApiErrorCode::ProfileRevisionConflict => {
-            "The saved profile changed. Review its current settings before requesting again."
+        ApiErrorCode::NativeSettingsRequired => {
+            "Add or configure this title in Radarr or Sonarr before requesting it here."
         }
         ApiErrorCode::ExistingSettingsConflict => {
             "The existing title has different settings. Nothing was overwritten."
@@ -243,13 +240,7 @@ pub(crate) fn error(code: ApiErrorCode) -> HttpError {
         ApiErrorCode::InvalidScope => {
             "The requested episode scope is invalid or has no eligible episodes."
         }
-        ApiErrorCode::AmbiguousOperationTarget => "Choose the exact profile for this operation.",
-        ApiErrorCode::PreconditionRequired => {
-            "Supply the required idempotency key or exact If-Match revision."
-        }
-        ApiErrorCode::RevisionConflict => {
-            "The profile changed. Read its current revision before deciding to replace it."
-        }
+        ApiErrorCode::PreconditionRequired => "Supply the required caller-owned idempotency key.",
         ApiErrorCode::UnsupportedTransportOperation => {
             "This operation is not supported by the selected transport."
         }
@@ -276,19 +267,6 @@ fn ok<T: Serialize + JsonSchema + Send + Sync + 'static>(body: T) -> ApiOk<T> {
             cache_control: "no-store".into(),
         },
     )
-}
-#[derive(Serialize, JsonSchema)]
-struct ProfileHeaders {
-    #[serde(rename = "cache-control")]
-    cache_control: String,
-    #[serde(rename = "etag")]
-    etag: String,
-}
-fn profile_headers(profile: &DownloadProfile) -> ProfileHeaders {
-    ProfileHeaders {
-        cache_control: "no-store".into(),
-        etag: format!("\"{}\"", profile.revision()),
-    }
 }
 #[derive(Serialize, JsonSchema)]
 struct RequestHeaders {
@@ -324,14 +302,8 @@ struct SearchParams {
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ProfileParams {
-    kind: Option<MediaKind>,
-}
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 struct HealthParams {
     operation: Option<Operation>,
-    profile_id: Option<ProfileId>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -339,14 +311,6 @@ struct EpisodeParams {
     season: Option<u16>,
     limit: Option<u32>,
     page_token: Option<String>,
-}
-#[derive(Deserialize, JsonSchema)]
-struct ManagerPath {
-    manager: ManagerId,
-}
-#[derive(Deserialize, JsonSchema)]
-struct ProfilePath {
-    profile_id: ProfileId,
 }
 #[derive(Deserialize, JsonSchema)]
 struct RequestPath {
@@ -396,25 +360,6 @@ fn validate_key(key: &str) -> Result<(), HttpError> {
         Ok(())
     }
 }
-fn if_match(r: &RequestContext<Arc<Context>>) -> Result<Revision, HttpError> {
-    let value = r
-        .request
-        .headers()
-        .get("if-match")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| error(ApiErrorCode::PreconditionRequired))?;
-    let revision = value
-        .strip_prefix('"')
-        .and_then(|v| v.strip_suffix('"'))
-        .and_then(|s| s.parse::<u64>().ok())
-        .and_then(Revision::new)
-        .ok_or_else(|| error(ApiErrorCode::InvalidArguments))?;
-    if value != format!("\"{revision}\"") {
-        return Err(error(ApiErrorCode::RevisionConflict));
-    }
-    Ok(revision)
-}
-
 #[endpoint{method=GET,path="/api/v1/system",tags=["media"]}]
 async fn endpoint_system(
     r: RequestContext<Arc<Context>>,
@@ -435,7 +380,7 @@ async fn endpoint_health(
     authorize(&r, false, false, false)?;
     let q = q.into_inner();
     Ok(ok(service(&r)?
-        .health_snapshot(q.operation, q.profile_id.as_ref())
+        .health_snapshot(q.operation)
         .await
         .map_err(error)?))
 }
@@ -446,10 +391,7 @@ async fn endpoint_component_health(
 ) -> Result<ApiOk<ComponentHealth>, HttpError> {
     authorize(&r, false, false, false)?;
     let component = p.into_inner().component;
-    let snapshot = service(&r)?
-        .health_snapshot(None, None)
-        .await
-        .map_err(error)?;
+    let snapshot = service(&r)?.health_snapshot(None).await.map_err(error)?;
     Ok(ok(snapshot
         .components
         .into_iter()
@@ -462,68 +404,6 @@ async fn endpoint_managers(
 ) -> Result<ApiOk<ManagerList>, HttpError> {
     authorize(&r, false, false, false)?;
     Ok(ok(service(&r)?.managers().await))
-}
-#[endpoint{method=GET,path="/api/v1/managers/{manager}/options",tags=["media"]}]
-async fn endpoint_options(
-    r: RequestContext<Arc<Context>>,
-    p: Path<ManagerPath>,
-) -> Result<ApiOk<ManagerOptions>, HttpError> {
-    authorize(&r, false, false, false)?;
-    Ok(ok(service(&r)?
-        .options(p.into_inner().manager)
-        .await
-        .map_err(error)?))
-}
-#[endpoint{method=GET,path="/api/v1/profiles",tags=["media"]}]
-async fn endpoint_profiles(
-    r: RequestContext<Arc<Context>>,
-    q: Query<ProfileParams>,
-) -> Result<ApiOk<ProfileList>, HttpError> {
-    authorize(&r, false, false, false)?;
-    Ok(ok(service(&r)?.profiles(q.into_inner().kind).await))
-}
-#[endpoint{method=GET,path="/api/v1/profiles/{profile_id}",tags=["media"]}]
-async fn endpoint_profile(
-    r: RequestContext<Arc<Context>>,
-    p: Path<ProfilePath>,
-) -> Result<HttpResponseHeaders<HttpResponseOk<DownloadProfile>, ProfileHeaders>, HttpError> {
-    authorize(&r, false, false, false)?;
-    let profile = service(&r)?
-        .profile(&p.into_inner().profile_id)
-        .await
-        .map_err(error)?;
-    let headers = profile_headers(&profile);
-    Ok(HttpResponseHeaders::new(HttpResponseOk(profile), headers))
-}
-#[endpoint{method=POST,path="/api/v1/profiles",tags=["media"],request_body_max_bytes=1048576}]
-async fn endpoint_create_profile(
-    r: RequestContext<Arc<Context>>,
-    body: TypedBody<ProfileInput>,
-) -> Result<HttpResponseHeaders<HttpResponseCreated<DownloadProfile>, ProfileHeaders>, HttpError> {
-    let p = authorize(&r, false, true, false)?;
-    let profile = service(&r)?
-        .create_profile(&p.actor, &idempotency(&r)?, body.into_inner())
-        .await
-        .map_err(error)?;
-    let headers = profile_headers(&profile);
-    Ok(HttpResponseHeaders::new(
-        HttpResponseCreated(profile),
-        headers,
-    ))
-}
-#[endpoint{method=PUT,path="/api/v1/profiles/{profile_id}",tags=["media"],request_body_max_bytes=1048576}]
-async fn endpoint_replace_profile(
-    r: RequestContext<Arc<Context>>,
-    p: Path<ProfilePath>,
-    body: TypedBody<ProfileInput>,
-) -> Result<HttpResponseHeaders<HttpResponseOk<DownloadProfile>, ProfileHeaders>, HttpError> {
-    authorize(&r, false, true, false)?;
-    let profile = service(&r)?
-        .replace_profile(&p.into_inner().profile_id, if_match(&r)?, body.into_inner())
-        .await
-        .map_err(error)?;
-    let headers = profile_headers(&profile);
-    Ok(HttpResponseHeaders::new(HttpResponseOk(profile), headers))
 }
 #[endpoint{method=GET,path="/api/v1/search",tags=["media"]}]
 async fn endpoint_search(
@@ -721,11 +601,6 @@ pub fn register(api: &mut ApiDescription<Arc<Context>>) -> anyhow::Result<()> {
     api.register(endpoint_health)?;
     api.register(endpoint_component_health)?;
     api.register(endpoint_managers)?;
-    api.register(endpoint_options)?;
-    api.register(endpoint_profiles)?;
-    api.register(endpoint_profile)?;
-    api.register(endpoint_create_profile)?;
-    api.register(endpoint_replace_profile)?;
     api.register(endpoint_search)?;
     api.register(endpoint_movies)?;
     api.register(endpoint_movie)?;

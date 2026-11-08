@@ -1,3 +1,13 @@
+# 0.3.0
+
+Removes Downloads profile management from the sidebar, API, CLI and Assist.
+Existing native quality and library selections stay private and automatic;
+Radarr/Sonarr keep ownership of their rules. The sidebar no longer embeds
+advanced downloader settings. Existing titles keep native configuration, and
+new titles follow native Add defaults for availability and season folders.
+Accepted requests survive the journal migration. Health warnings now identify
+available upstream updates clearly. The shared header/footer stays unchanged.
+
 # 0.2.0
 
 Search and request movies or exact TV seasons with saved Radarr/Sonarr profiles

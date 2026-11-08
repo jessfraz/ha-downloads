@@ -73,7 +73,7 @@
         <div class="connection-copy">
           <p class="eyebrow" id="connection-label">Connection status</p>
           <h2 id="connection-title">Checking your connection</h2>
-          <p id="connection-message">Checking the VPN and protection before opening downloads.</p>
+          <p id="connection-message">Checking the VPN and protection before reporting readiness.</p>
         </div>
         <span class="connection-badge" id="connection-badge">Checking</span>
       </section>
@@ -114,35 +114,24 @@
 
       <section id="setup" class="surface setup-panel" aria-labelledby="setup-title" hidden>
         <div class="section-heading"><h2 id="setup-title">A private connection comes first</h2><span class="step-count">One-time setup</span></div>
-        <p>Connect the VPN, then set up your download server in SABnzbd.</p>
+        <p>Connect the VPN in this app’s Configuration tab.</p>
         <ol class="setup-steps">
           <li><span class="step-number" aria-hidden="true">1</span><div><h3>Open the app settings</h3><p>In Home Assistant, open this app’s <strong>Configuration</strong> tab.</p></div></li>
           <li><span class="step-number" aria-hidden="true">2</span><div><h3>Connect your VPN</h3><p>Enter your VPN provider and connection details. Save, then restart the app.</p></div></li>
-          <li><span class="step-number" aria-hidden="true">3</span><div><h3>Make it yours</h3><p>Return here. Once the checks pass, SABnzbd will guide you through adding your download server.</p></div></li>
+          <li><span class="step-number" aria-hidden="true">3</span><div><h3>Choose something to watch</h3><p>Downloads uses your existing Radarr and Sonarr setup. Quality and library settings stay in those apps.</p></div></li>
         </ol>
       </section>
 
       <section id="connection-help" class="surface help-panel" aria-labelledby="help-title" hidden>
         <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
-        <div><h2 id="help-title">Waiting for a secure connection</h2><p id="help-message">The downloads interface will open once the connection checks pass.</p></div>
-      </section>
-        </details>
-        <details id="advanced-downloads" class="advanced-downloads" hidden>
-          <summary>Advanced downloader settings</summary>
-
-      <section id="downloads" class="surface downloads-panel" aria-labelledby="downloads-title" hidden>
-        <div class="downloads-heading">
-          <div class="queue-title"><h2 id="downloads-title">Download queue</h2><span id="paused-badge" class="paused-badge" hidden>Queue paused</span></div>
-          <a id="open-downloads" class="text-link" target="_blank" rel="noopener noreferrer">Open downloads <svg class="icon" aria-hidden="true"><use href="#icon-external"/></svg><span class="visually-hidden"> in a new tab</span></a>
-        </div>
-        <div id="download-frame" class="download-frame"></div>
+        <div><h2 id="help-title">Waiting for a secure connection</h2><p id="help-message">Requests become available once the connection checks pass.</p></div>
       </section>
         </details>
       </section>
 
       <div class="media-content">
         <section id="search-panel" role="tabpanel" aria-labelledby="search-tab" data-detail="closed">
-          <div class="media-heading"><h2>Find your next watch</h2><p>Movies and TV, with your saved preferences.</p></div>
+          <div class="media-heading"><h2>Find your next watch</h2><p>Movies and TV, using your media manager settings.</p></div>
           <form id="media-search-form" class="media-search-row" role="search">
             <label class="media-search"><span class="visually-hidden">Search movies and TV</span><input id="media-query" type="search" placeholder="Search a movie or TV show" autocomplete="off" maxlength="200"></label>
             <div class="media-filters" role="group" aria-label="Media type">
@@ -174,12 +163,11 @@
           <div id="activity-list" class="media-list"></div>
           <p id="activity-empty" class="media-empty">Loading activity…</p>
           <button id="activity-more" class="media-secondary" type="button" hidden>Load more activity</button>
-          <button id="show-advanced" class="media-link media-admin" type="button" hidden>Advanced downloader settings</button>
         </section>
       </div>
       <p id="media-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></p>
 
-      <noscript><p class="noscript surface">Enable JavaScript to check the connection and open downloads.</p></noscript>
+      <noscript><p class="noscript surface">Enable JavaScript to browse media and check the connection.</p></noscript>
     </main>
     <footer class="app-footer">
       <p>Downloads <span id="app-version" class="app-version" hidden></span></p>

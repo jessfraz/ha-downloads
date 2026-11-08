@@ -1,10 +1,9 @@
 //! One-request transport client. The server owns policy, readiness and identity.
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use ha_downloads::media::model::{
-    ApiErrorCode, Component, ComponentHealth, CreateRequest, DownloadProfile, Episode,
-    HealthSnapshot, ManagerId, ManagerList, ManagerOptions, MediaItem, MediaKind, Operation, Page,
-    ProfileId, ProfileInput, ProfileList, QueueItem, ReadinessState, RequestId, RequestRecord,
-    SearchKind, SearchQuery, SystemResponse, TmdbId, TvdbId,
+    ApiErrorCode, Component, ComponentHealth, CreateRequest, Episode, HealthSnapshot, ManagerList,
+    MediaItem, Operation, Page, QueueItem, ReadinessState, RequestId, RequestRecord, SearchKind,
+    SearchQuery, SystemResponse, TmdbId, TvdbId,
 };
 use reqwest::{Client, Method, RequestBuilder, Url, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -171,8 +170,6 @@ enum MediaCommand {
     #[command(subcommand)]
     Managers(Managers),
     #[command(subcommand)]
-    Profiles(Profiles),
-    #[command(subcommand)]
     Movies(Movies),
     #[command(subcommand)]
     Series(Series),
@@ -191,41 +188,12 @@ enum HealthCommand {
     Check {
         #[arg(long)]
         operation: Operation,
-        #[arg(long)]
-        profile_id: Option<ProfileId>,
     },
 }
 
 #[derive(Subcommand)]
 enum Managers {
     List,
-    Options { manager: ManagerId },
-}
-
-#[derive(Subcommand)]
-enum Profiles {
-    List {
-        #[arg(long)]
-        kind: Option<MediaKind>,
-    },
-    Get {
-        id: ProfileId,
-    },
-    /// Native administrator credential required. The caller owns the replay key.
-    Create {
-        #[command(flatten)]
-        input: Input,
-        #[command(flatten)]
-        key: Key,
-    },
-    /// Replace using the caller's exact ETag, never an automatically refreshed one.
-    Replace {
-        id: ProfileId,
-        #[arg(long, value_parser = parse_revision)]
-        if_match: String,
-        #[command(flatten)]
-        input: Input,
-    },
 }
 
 #[derive(Subcommand)]
@@ -291,18 +259,6 @@ fn parse_key(value: &str) -> std::result::Result<String, &'static str> {
     }
 }
 
-fn parse_revision(value: &str) -> std::result::Result<String, &'static str> {
-    let revision = value.strip_prefix('"').and_then(|v| v.strip_suffix('"'));
-    if revision
-        .and_then(|v| v.parse::<u64>().ok())
-        .is_some_and(|number| number > 0 && revision == Some(number.to_string().as_str()))
-    {
-        Ok(value.to_owned())
-    } else {
-        Err("expected an exact quoted positive revision")
-    }
-}
-
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ErrorCode {
@@ -318,7 +274,6 @@ enum ErrorCode {
     InputReadFailed,
     InputTooLarge,
     InvalidJsonInput,
-    UnsupportedTransportOperation,
     RequestTimeoutOutcomeUnknown,
     RequestFailedOutcomeUnknown,
     ResponseReadFailedOutcomeUnknown,
@@ -363,7 +318,6 @@ struct Api {
     client: Client,
     base: Url,
     token: header::HeaderValue,
-    transport: Transport,
 }
 
 fn variable(name: &str) -> Result<Option<String>> {
@@ -462,7 +416,6 @@ impl Api {
             client,
             base,
             token,
-            transport,
         })
     }
 
@@ -551,14 +504,6 @@ impl Api {
         write_json(io::stdout().lock(), &self.send::<T>(request).await?)?;
         Ok(ExitCode::SUCCESS)
     }
-
-    fn require_native(&self) -> Result<()> {
-        if self.transport == Transport::Native {
-            Ok(())
-        } else {
-            Err(Failure::local(ErrorCode::UnsupportedTransportOperation))
-        }
-    }
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {
@@ -599,27 +544,19 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             .await
         }
         MediaCommand::Health {
-            command:
-                Some(HealthCommand::Check {
-                    operation,
-                    profile_id,
-                }),
+            command: Some(HealthCommand::Check { operation }),
         } => {
-            let mut request = api
+            let request = api
                 .request(Method::GET, "health/stack")?
                 .query(&[("operation", operation.to_string())]);
-            if let Some(id) = &profile_id {
-                request = request.query(&[("profile_id", id.to_string())]);
-            }
             let output = api.send::<HealthSnapshot>(request).await?;
-            // The backend owns dependency policy. A client accepts only one
-            // matching, unexpired verdict and never guesses among profile targets.
-            let mut matches = output.body.readiness.iter().filter(|item| {
-                item.operation == operation
-                    && profile_id
-                        .as_ref()
-                        .is_none_or(|id| item.profile_id.as_ref() == Some(id))
-            });
+            // Native managers own settings and the backend owns dependency policy.
+            // Accept exactly one matching, unexpired operation verdict.
+            let mut matches = output
+                .body
+                .readiness
+                .iter()
+                .filter(|item| item.operation == operation);
             let first = matches.next();
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -648,47 +585,6 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         MediaCommand::Managers(Managers::List) => {
             api.print::<ManagerList>(api.request(Method::GET, "managers")?)
                 .await
-        }
-        MediaCommand::Managers(Managers::Options { manager }) => {
-            api.print::<ManagerOptions>(
-                api.request(Method::GET, &format!("managers/{manager}/options"))?,
-            )
-            .await
-        }
-        MediaCommand::Profiles(Profiles::List { kind }) => {
-            let mut request = api.request(Method::GET, "profiles")?;
-            if let Some(kind) = kind {
-                request = request.query(&[("kind", kind.to_string())]);
-            }
-            api.print::<ProfileList>(request).await
-        }
-        MediaCommand::Profiles(Profiles::Get { id }) => {
-            api.print::<DownloadProfile>(api.request(Method::GET, &format!("profiles/{id}"))?)
-                .await
-        }
-        MediaCommand::Profiles(Profiles::Create { input, key }) => {
-            api.require_native()?;
-            let body = input.read::<ProfileInput>()?;
-            api.print::<DownloadProfile>(
-                api.request(Method::POST, "profiles")?
-                    .header("Idempotency-Key", key.idempotency_key)
-                    .json(&body),
-            )
-            .await
-        }
-        MediaCommand::Profiles(Profiles::Replace {
-            id,
-            if_match,
-            input,
-        }) => {
-            api.require_native()?;
-            let body = input.read::<ProfileInput>()?;
-            api.print::<DownloadProfile>(
-                api.request(Method::PUT, &format!("profiles/{id}"))?
-                    .header(header::IF_MATCH, if_match)
-                    .json(&body),
-            )
-            .await
         }
         MediaCommand::Movies(Movies::List(page)) => {
             api.print::<Page<MediaItem>>(page.apply(api.request(Method::GET, "movies")?))

@@ -32,105 +32,56 @@ impl MediaService {
                 Err(ApiErrorCode::IdempotencyConflict)
             };
         }
-        let reference = input.profile();
-        let profile = self.profile(&reference.id).await?;
-        if reference.revision != profile.revision() {
-            return Err(ApiErrorCode::ProfileRevisionConflict);
-        }
         let now = crate::monitor::unix_ms();
         let as_of = utc_timestamp(now)?;
-        let plan = match (&input, &profile) {
-            (
-                CreateRequest::Movie {
-                    tmdb_id, intent, ..
-                },
-                DownloadProfile::Movie {
-                    name,
-                    is_default,
-                    settings,
-                    ..
-                },
-            ) => {
-                let root = self
-                    .validate_settings(&ProfileInput::Movie {
-                        name: name.clone(),
-                        is_default: *is_default,
-                        settings: settings.clone(),
-                    })
-                    .await?;
+        let plan = match &input {
+            CreateRequest::Movie { tmdb_id, intent } => {
                 let media = self.find_movie(*tmdb_id).await?;
-                if media.id > 0
-                    && (media.quality_profile_id != settings.quality_profile_id.get()
-                        || media.root_folder_path != root)
+                let choices = self.native_choices(ManagerId::Radarr).await?;
+                let (settings, root) = choices.movie_settings(&media)?;
+                if media.id > 0 && matches!(intent, MovieIntent::MonitorOnly {}) && !media.monitored
                 {
-                    return Err(ApiErrorCode::ExistingSettingsConflict);
-                }
-                if media.id > 0
-                    && matches!(intent, MovieIntent::MonitorOnly { .. })
-                    && !media.monitored
-                {
-                    return Err(ApiErrorCode::ExistingSettingsConflict);
+                    return Err(ApiErrorCode::NativeSettingsRequired);
                 }
                 Plan::Movie {
                     existing_id: (media.id > 0).then_some(media.id),
                     media,
-                    settings: settings.clone(),
+                    settings,
                     root,
-                    search: matches!(intent, MovieIntent::SearchNow { .. }),
+                    search: matches!(intent, MovieIntent::SearchNow {}),
                 }
             }
-            (
-                CreateRequest::Series {
-                    tvdb_id, intent, ..
-                },
-                DownloadProfile::Series {
-                    name,
-                    is_default,
-                    settings,
-                    ..
-                },
-            ) => {
-                let root = self
-                    .validate_settings(&ProfileInput::Series {
-                        name: name.clone(),
-                        is_default: *is_default,
-                        settings: settings.clone(),
-                    })
-                    .await?;
+            CreateRequest::Series { tvdb_id, intent } => {
                 let media = self.find_series(*tvdb_id).await?;
-                if media.id > 0
-                    && (media.quality_profile_id != settings.quality_profile_id.get()
-                        || media.root_folder_path != root)
-                {
-                    return Err(ApiErrorCode::ExistingSettingsConflict);
-                }
+                let choices = self.native_choices(ManagerId::Sonarr).await?;
+                let (settings, root) = choices.series_settings(&media, intent)?;
                 let selected_seasons = match intent {
                     SeriesIntent::SearchNow {
                         scope: EpisodeScope::Seasons { numbers },
                     } => {
-                        if numbers
-                            .numbers()
-                            .iter()
-                            .any(|n| !media.seasons.iter().any(|s| s.season_number == *n))
-                        {
+                        if numbers.numbers().iter().any(|number| {
+                            !media
+                                .seasons
+                                .iter()
+                                .any(|season| season.season_number == *number)
+                        }) {
                             return Err(ApiErrorCode::InvalidScope);
                         }
                         numbers.numbers().to_vec()
                     }
                     SeriesIntent::SearchNow {
-                        scope: EpisodeScope::AllAired { .. },
+                        scope: EpisodeScope::AllAired {},
                     } => media
                         .seasons
                         .iter()
-                        .filter(|s| s.season_number > 0)
-                        .map(|s| s.season_number)
+                        .filter(|season| season.season_number > 0)
+                        .map(|season| season.season_number)
                         .collect(),
-                    SeriesIntent::MonitorOnly { .. } => {
-                        if settings.future_monitoring == FutureMonitoring::Off {
-                            return Err(ApiErrorCode::InvalidScope);
-                        }
-                        if media.id > 0 && (!media.monitored || media.monitor_new_items != "all") {
-                            return Err(ApiErrorCode::ExistingSettingsConflict);
+                    SeriesIntent::MonitorOnly {} => {
+                        if settings.future_monitoring == FutureMonitoring::Off
+                            || (media.id > 0 && !media.monitored)
+                        {
+                            return Err(ApiErrorCode::NativeSettingsRequired);
                         }
                         vec![]
                     }
@@ -141,14 +92,13 @@ impl MediaService {
                 Plan::Series {
                     existing_id: (media.id > 0).then_some(media.id),
                     media,
-                    settings: settings.clone(),
+                    settings,
                     root,
                     search: matches!(intent, SeriesIntent::SearchNow { .. }),
                     selected_seasons,
                     as_of,
                 }
             }
-            _ => return Err(ApiErrorCode::InvalidArguments),
         };
         let record = RequestRecord {
             id: RequestId::from_digest(digest(&["request", actor, key])),
@@ -452,7 +402,7 @@ impl MediaService {
                         .await?;
                     if current.id != upstream_id
                         || current.quality_profile_id != settings.quality_profile_id.get()
-                        || current.root_folder_path != *root
+                        || !matches_frozen_root(&current.root_folder_path, &current.path, root)
                     {
                         return Err(ApiErrorCode::ExistingSettingsConflict);
                     }
@@ -494,7 +444,7 @@ impl MediaService {
                         .await?;
                     if current.id != upstream_id
                         || current.quality_profile_id != settings.quality_profile_id.get()
-                        || current.root_folder_path != *root
+                        || !matches_frozen_root(&current.root_folder_path, &current.path, root)
                     {
                         return Err(ApiErrorCode::ExistingSettingsConflict);
                     }
@@ -758,6 +708,18 @@ fn request_failure(code: ApiErrorCode) -> &'static str {
         _ => "The request could not be applied. Inspect its current state before trying again.",
     }
 }
+fn matches_frozen_root(root_path: &str, media_path: &str, frozen_root: &str) -> bool {
+    if !root_path.is_empty() {
+        return root_path == frozen_root;
+    }
+    // Native library responses can omit rootFolderPath. Keep the accepted
+    // destination proof, using the same path-component boundary as admission.
+    !frozen_root.is_empty()
+        && (media_path == frozen_root
+            || media_path
+                .strip_prefix(frozen_root.trim_end_matches('/'))
+                .is_some_and(|suffix| suffix.starts_with('/')))
+}
 fn aired(episode: &UpEpisode, cutoff: &str) -> bool {
     episode
         .air_date_utc
@@ -870,10 +832,6 @@ mod tests {
         };
         let input = CreateRequest::Movie {
             tmdb_id: TmdbId::try_from(14337).unwrap(),
-            profile: MovieProfileRef {
-                id: "276319ec-c797-460c-a49e-6b90fc1f6ae8".parse().unwrap(),
-                revision: Revision::new(1).unwrap(),
-            },
             intent: MovieIntent::MonitorOnly {},
         };
         let media = UpMovie {
@@ -886,6 +844,7 @@ mod tests {
             images: vec![],
             quality_profile_id: 1,
             root_folder_path: "/media/movies".into(),
+            minimum_availability: "released".into(),
             path: String::new(),
             monitored: true,
             has_file: false,

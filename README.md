@@ -30,11 +30,13 @@ media managers. No indexer, Usenet account, or VPN subscription is included.
 
 ## Media, Assist and CLI
 
-Configure manager origins and keys in the masked `media` app settings, then
-create saved movie/TV profiles in Downloads. Requests pin a profile revision;
-existing native quality/root settings are never silently overwritten. A lost
-acknowledgement is recovered by its original request/key, not a duplicate write.
-Accepted and applied requests are distinct from downloaded/imported media.
+Configure manager origins and keys in the masked `media` app settings.
+Quality rules, library folders and downloader configuration belong to Radarr,
+Sonarr and SABnzbd. Downloads uses the configured native selections automatically;
+it has no profile editor or settings API. Existing titles keep their native
+configuration. A lost acknowledgement is recovered by its original request/key,
+not a duplicate write. Accepted and applied requests are distinct from
+completed downloads and imports.
 
 The optional [native HA companion](integration/README.md) adds cached health and
 readiness entities, actions, scoped Assist tools and an authenticated HA bridge.
@@ -110,7 +112,7 @@ Status output is typed JSON. Exit 0 means ready, 2 means health is not ready
 are redacted JSON on stderr, with a fixed code and optional HTTP status. Only the
 `downloads serve` command starts app services, within its existing private Linux
 container boundary. The `ha-downloads` client has no `serve` command; media
-requests and profile management use the explicit commands in the
+requests use the explicit commands in the
 [CLI contract](docs/cli.md).
 
 ## Develop

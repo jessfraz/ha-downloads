@@ -25,11 +25,10 @@ pub(crate) struct Cache {
     pub movie_queue_at: u64,
     pub series_queue_at: u64,
     pub searches: BTreeMap<String, (Vec<MediaItem>, u64)>,
-    pub roots: BTreeMap<ProfileId, RootObservation>,
+    pub roots: BTreeMap<ManagerId, RootObservation>,
     pub download_storage: Option<(bool, u64)>,
 }
 pub(crate) struct RootObservation {
-    pub root: RootFolderId,
     pub accessible: bool,
     pub observed_at_unix_ms: u64,
 }
@@ -84,27 +83,6 @@ impl MediaService {
             ManagerId::Sonarr => &self.sonarr,
         }
     }
-    pub async fn profiles(&self, kind: Option<MediaKind>) -> ProfileList {
-        ProfileList {
-            items: self
-                .store
-                .snapshot()
-                .await
-                .profiles
-                .into_iter()
-                .filter(|p| kind.is_none_or(|kind| p.kind() == kind))
-                .collect(),
-        }
-    }
-    pub async fn profile(&self, id: &ProfileId) -> Result<DownloadProfile, ApiErrorCode> {
-        self.store
-            .snapshot()
-            .await
-            .profiles
-            .into_iter()
-            .find(|p| p.id() == id)
-            .ok_or(ApiErrorCode::NotFound)
-    }
     pub async fn managers(&self) -> ManagerList {
         let (radarr, sonarr) = tokio::join!(
             self.radarr.get::<UpStatus>("system/status", &[]),
@@ -127,224 +105,12 @@ impl MediaService {
             ],
         }
     }
-    pub async fn options(&self, id: ManagerId) -> Result<ManagerOptions, ApiErrorCode> {
-        let up = self.manager(id);
-        let (quality, roots, tags) = tokio::try_join!(
-            up.get::<Vec<UpNamed>>("qualityprofile", &[]),
-            up.get::<Vec<UpRoot>>("rootfolder", &[]),
-            up.get::<Vec<UpTag>>("tag", &[])
-        )?;
-        if quality.len() > 200 || roots.len() > 100 || tags.len() > 1000 {
-            return Err(ApiErrorCode::InvalidUpstreamResponse);
-        }
-        Ok(ManagerOptions {
-            manager: id,
-            quality_profiles: quality
-                .into_iter()
-                .map(|q| NamedOption {
-                    id: q.id,
-                    name: safe_text(&q.name, 100),
-                })
-                .collect(),
-            root_folders: roots
-                .into_iter()
-                .map(|r| {
-                    Ok(RootFolderOption {
-                        id: RootFolderId::try_from(r.id)
-                            .map_err(|_| ApiErrorCode::InvalidUpstreamResponse)?,
-                        name: format!("Library {}", r.id),
-                        accessible: r.accessible,
-                    })
-                })
-                .collect::<Result<_, ApiErrorCode>>()?,
-            tags: tags
-                .into_iter()
-                .map(|t| NamedOption {
-                    id: t.id,
-                    name: safe_text(&t.label, 100),
-                })
-                .collect(),
-            series_types: if id == ManagerId::Sonarr {
-                vec![SeriesType::Standard, SeriesType::Daily, SeriesType::Anime]
-            } else {
-                vec![]
-            },
-        })
-    }
-    pub(crate) async fn validate_settings(
-        &self,
-        input: &ProfileInput,
-    ) -> Result<String, ApiErrorCode> {
-        let (manager, quality, root, tags) = match input {
-            ProfileInput::Movie { settings, .. } => (
-                ManagerId::Radarr,
-                settings.quality_profile_id,
-                settings.root_folder_id,
-                &settings.tags,
-            ),
-            ProfileInput::Series { settings, .. } => (
-                ManagerId::Sonarr,
-                settings.quality_profile_id,
-                settings.root_folder_id,
-                &settings.tags,
-            ),
-        };
-        let up = self.manager(manager);
-        let (qualities, roots, available_tags) = tokio::try_join!(
-            up.get::<Vec<UpNamed>>("qualityprofile", &[]),
-            up.get::<Vec<UpRoot>>("rootfolder", &[]),
-            up.get::<Vec<UpTag>>("tag", &[])
-        )?;
-        if !qualities.iter().any(|q| q.id == quality.get())
-            || tags.len() > 100
-            || tags.iter().enumerate().any(|(i, t)| {
-                tags[..i].contains(t) || !available_tags.iter().any(|a| a.id == t.get())
-            })
-        {
-            return Err(ApiErrorCode::InvalidArguments);
-        }
-        let folder = roots
-            .into_iter()
-            .find(|r| r.id == root.get())
-            .ok_or(ApiErrorCode::InvalidArguments)?;
-        if !folder.accessible {
-            return Err(ApiErrorCode::UpstreamUnavailable);
-        }
-        Ok(folder.path)
-    }
-    pub async fn create_profile(
-        &self,
-        actor: &str,
-        key: &str,
-        input: ProfileInput,
-    ) -> Result<DownloadProfile, ApiErrorCode> {
-        let key_hash = hash(&[key]);
-        let fingerprint = fingerprint(&input)?;
-        let _guard = self.operations.lock().await;
-        let snapshot = self.store.snapshot().await;
-        if let Some(receipt) = snapshot
-            .profile_creates
-            .iter()
-            .find(|r| r.actor == actor && r.key_hash == key_hash)
-        {
-            if receipt.fingerprint != fingerprint {
-                return Err(ApiErrorCode::IdempotencyConflict);
-            }
-            return snapshot
-                .profiles
-                .into_iter()
-                .find(|p| p.id() == &receipt.id)
-                .ok_or(ApiErrorCode::NotFound);
-        }
-        self.validate_settings(&input).await?;
-        let id = ProfileId::from_digest(digest(&["profile", actor, key]));
-        let revision = Revision::new(1).ok_or(ApiErrorCode::InvalidArguments)?;
-        let profile = make_profile(id.clone(), revision, input);
-        self.store
-            .update(|state| {
-                if profile.is_default() {
-                    clear_default(state, &profile)?
-                }
-                state.profiles.push(profile.clone());
-                state
-                    .profile_creates
-                    .push(crate::media::store::ProfileCreateReceipt {
-                        actor: actor.into(),
-                        key_hash,
-                        fingerprint,
-                        id,
-                    });
-                Ok(profile)
-            })
-            .await
-    }
-    pub async fn replace_profile(
-        &self,
-        id: &ProfileId,
-        revision: Revision,
-        input: ProfileInput,
-    ) -> Result<DownloadProfile, ApiErrorCode> {
-        let _guard = self.operations.lock().await;
-        let current = self.profile(id).await?;
-        if current.revision() != revision {
-            return Err(ApiErrorCode::RevisionConflict);
-        }
-        self.validate_settings(&input).await?;
-        let profile = make_profile(
-            id.clone(),
-            revision.next().ok_or(ApiErrorCode::RevisionConflict)?,
-            input,
-        );
-        if profile.kind() != current.kind() {
-            return Err(ApiErrorCode::InvalidArguments);
-        }
-        self.store
-            .update(|state| {
-                if profile.is_default() {
-                    clear_default(state, &profile)?
-                }
-                let slot = state
-                    .profiles
-                    .iter_mut()
-                    .find(|p| p.id() == id)
-                    .ok_or(ApiErrorCode::NotFound)?;
-                *slot = profile.clone();
-                Ok(profile)
-            })
-            .await
-    }
     pub async fn run(self: Arc<Self>, shutdown: watch::Receiver<bool>) {
         tokio::join!(
             self.health_loop(shutdown.clone()),
             self.request_loop(shutdown)
         );
     }
-}
-fn make_profile(id: ProfileId, revision: Revision, input: ProfileInput) -> DownloadProfile {
-    match input {
-        ProfileInput::Movie {
-            name,
-            is_default,
-            settings,
-        } => DownloadProfile::Movie {
-            id,
-            revision,
-            name,
-            is_default,
-            settings,
-        },
-        ProfileInput::Series {
-            name,
-            is_default,
-            settings,
-        } => DownloadProfile::Series {
-            id,
-            revision,
-            name,
-            is_default,
-            settings,
-        },
-    }
-}
-fn clear_default(
-    state: &mut crate::media::store::DurableState,
-    profile: &DownloadProfile,
-) -> Result<(), ApiErrorCode> {
-    for existing in &mut state.profiles {
-        if existing.kind() == profile.kind()
-            && existing.id() != profile.id()
-            && existing.is_default()
-        {
-            existing.set_default(false);
-            match existing {
-                DownloadProfile::Movie { revision, .. }
-                | DownloadProfile::Series { revision, .. } => {
-                    *revision = revision.next().ok_or(ApiErrorCode::RevisionConflict)?
-                }
-            }
-        }
-    }
-    Ok(())
 }
 pub(crate) fn digest(parts: &[&str]) -> [u8; 32] {
     let mut hash = Sha256::new();

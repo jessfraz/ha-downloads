@@ -116,55 +116,55 @@ impl MediaService {
         }
     }
     async fn storage_health(&self) -> HealthOutcome {
-        let profiles = self.profiles(None).await.items;
         let (movies, series) = tokio::join!(
-            self.radarr.get::<Vec<UpRoot>>("rootfolder", &[]),
-            self.sonarr.get::<Vec<UpRoot>>("rootfolder", &[])
+            async {
+                let roots = self.radarr.get::<Vec<UpRoot>>("rootfolder", &[]).await;
+                (roots, crate::monitor::unix_ms())
+            },
+            async {
+                let roots = self.sonarr.get::<Vec<UpRoot>>("rootfolder", &[]).await;
+                (roots, crate::monitor::unix_ms())
+            }
         );
         let now = crate::monitor::unix_ms();
         let mut issues = vec![];
         let mut cache = self.cache.write().await;
-        for profile in profiles {
-            let roots = match &profile {
-                DownloadProfile::Movie { .. } => &movies,
-                DownloadProfile::Series { .. } => &series,
-            };
-            let root = profile.root_folder_id();
-            match roots {
-                Ok(roots) => {
+        for (manager, (roots, observed_at_unix_ms)) in
+            [(ManagerId::Radarr, movies), (ManagerId::Sonarr, series)]
+        {
+            let accessible = match roots {
+                Ok(roots)
+                    if roots.len() <= 100
+                        && roots
+                            .iter()
+                            .all(|root| RootFolderId::try_from(root.id).is_ok()) =>
+                {
                     let accessible = roots
                         .iter()
-                        .any(|r| r.id == root.get() && r.accessible && r.free_space != Some(0));
-                    cache.roots.insert(
-                        profile.id().clone(),
-                        RootObservation {
-                            root,
-                            accessible,
-                            observed_at_unix_ms: now,
-                        },
-                    );
+                        .any(|root| root.accessible && root.free_space != Some(0));
                     if !accessible {
                         issues.push(issue(
                             HealthIssueCode::StorageUnavailable,
-                            "A configured library is unavailable or full.",
+                            "No accessible library with free space was reported by a media manager.",
                         ));
                     }
+                    accessible
                 }
-                Err(_) => {
-                    cache.roots.insert(
-                        profile.id().clone(),
-                        RootObservation {
-                            root,
-                            accessible: false,
-                            observed_at_unix_ms: now,
-                        },
-                    );
+                _ => {
                     issues.push(issue(
                         HealthIssueCode::UpstreamUnavailable,
                         "Library accessibility cannot be verified.",
                     ));
+                    false
                 }
-            }
+            };
+            cache.roots.insert(
+                manager,
+                RootObservation {
+                    accessible,
+                    observed_at_unix_ms,
+                },
+            );
         }
         match cache.download_storage {
             Some((false, _)) => issues.push(issue(
@@ -224,12 +224,7 @@ impl MediaService {
     pub async fn health_snapshot(
         &self,
         operation: Option<Operation>,
-        profile_id: Option<&ProfileId>,
     ) -> Result<HealthSnapshot, ApiErrorCode> {
-        if operation.is_none() && profile_id.is_some() {
-            return Err(ApiErrorCode::InvalidArguments);
-        }
-        let requested_operation = operation;
         let now = crate::monitor::unix_ms();
         let mut components = self.health.read().await.clone();
         for component in [
@@ -338,7 +333,6 @@ impl MediaService {
                 };
             }
         }
-        let profiles = self.profiles(None).await.items;
         let cache = self.cache.read().await;
         let mut readiness = vec![];
         let operations = operation.map_or_else(
@@ -355,7 +349,6 @@ impl MediaService {
         );
         for operation in operations {
             let mut reasons = vec![];
-            let mut selected = None;
             let mut expires = now.saturating_add(TTL);
             if operation == Operation::Transfer {
                 for component in [
@@ -389,69 +382,32 @@ impl MediaService {
                     reasons.push(HealthIssueCode::StorageUnavailable)
                 }
             } else {
-                let kind = if matches!(operation, Operation::RequestMovie | Operation::ImportMovie)
-                {
-                    MediaKind::Movie
-                } else {
-                    MediaKind::Series
-                };
-                let candidates = profiles
-                    .iter()
-                    .filter(|p| p.kind() == kind)
-                    .collect::<Vec<_>>();
-                let profile = if let Some(id) = profile_id {
-                    Some(
-                        profiles
-                            .iter()
-                            .find(|p| p.id() == id && p.kind() == kind)
-                            .ok_or(ApiErrorCode::InvalidArguments)?,
-                    )
-                } else {
-                    candidates
-                        .iter()
-                        .find(|p| p.is_default())
-                        .copied()
-                        .or_else(|| {
-                            if candidates.len() == 1 {
-                                candidates.first().copied()
-                            } else {
-                                None
-                            }
-                        })
-                };
-                if profile.is_none() {
-                    if requested_operation.is_some() && profile_id.is_none() && candidates.len() > 1
-                    {
-                        return Err(ApiErrorCode::AmbiguousOperationTarget);
+                let (manager, component) =
+                    if matches!(operation, Operation::RequestMovie | Operation::ImportMovie) {
+                        (ManagerId::Radarr, Component::Radarr)
+                    } else {
+                        (ManagerId::Sonarr, Component::Sonarr)
+                    };
+                // Generic readiness proves manager storage only. The title's
+                // native configuration decides whether that title can be requested.
+                let root = cache.roots.get(&manager);
+                expires = expires.min(root.map_or(0, |root| {
+                    if root.observed_at_unix_ms > now {
+                        0
+                    } else {
+                        root.observed_at_unix_ms.saturating_add(TTL)
                     }
-                    reasons.push(HealthIssueCode::NotConfigured)
+                }));
+                if root.is_none() {
+                    reasons.push(HealthIssueCode::ChecksMissing);
+                } else if !root.is_some_and(|root| {
+                    root.accessible
+                        && now
+                            .checked_sub(root.observed_at_unix_ms)
+                            .is_some_and(|age| age <= TTL)
+                }) {
+                    reasons.push(HealthIssueCode::StorageUnavailable);
                 }
-                if let Some(profile) = profile {
-                    selected = Some(profile.id().clone());
-                    // A profile can change while a probe is in flight. Only
-                    // evidence for its current native root proves readiness.
-                    let root = cache
-                        .roots
-                        .get(profile.id())
-                        .filter(|root| root.root == profile.root_folder_id());
-                    expires = expires
-                        .min(root.map_or(0, |root| root.observed_at_unix_ms.saturating_add(TTL)));
-                    if root.is_none() {
-                        reasons.push(HealthIssueCode::ChecksMissing);
-                    } else if !root.is_some_and(|root| {
-                        root.accessible
-                            && now
-                                .checked_sub(root.observed_at_unix_ms)
-                                .is_some_and(|age| age <= TTL)
-                    }) {
-                        reasons.push(HealthIssueCode::StorageUnavailable)
-                    }
-                }
-                let component = if kind == MediaKind::Movie {
-                    Component::Radarr
-                } else {
-                    Component::Sonarr
-                };
                 expires = expires.min(component_expiry(&components, component));
                 if !manager_ready(&components, component) {
                     reasons.push(HealthIssueCode::UpstreamUnavailable)
@@ -473,7 +429,6 @@ impl MediaService {
             reasons.dedup();
             readiness.push(OperationReadiness {
                 operation,
-                profile_id: selected,
                 state: if reasons.is_empty() {
                     ReadinessState::Ready
                 } else {
@@ -595,6 +550,9 @@ async fn manager_health(up: &crate::media::upstream::Upstream) -> HealthOutcome 
                             "A download client needs attention."
                         }
                         HealthIssueCode::StorageUnavailable => "Storage needs attention.",
+                        HealthIssueCode::UpstreamHealth if source == "updatecheck" => {
+                            "An update is available."
+                        }
                         _ => "The service reported a health issue.",
                     }
                     .into(),
@@ -683,7 +641,7 @@ mod tests {
         )];
         service.cache.write().await.download_storage = Some((true, now));
         let initial = service
-            .health_snapshot(Some(Operation::Transfer), None)
+            .health_snapshot(Some(Operation::Transfer))
             .await
             .unwrap();
         assert_eq!(initial.readiness[0].state, ReadinessState::Ready);
@@ -698,7 +656,7 @@ mod tests {
                 status.diagnostics.downloader_checked_at_unix_ms = at;
             });
             let snapshot = service
-                .health_snapshot(Some(Operation::Transfer), None)
+                .health_snapshot(Some(Operation::Transfer))
                 .await
                 .unwrap();
             assert_eq!(
@@ -721,32 +679,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let id: ProfileId = "276319ec-c797-460c-a49e-6b90fc1f6ae8".parse().unwrap();
-        let profile = DownloadProfile::Movie {
-            id: id.clone(),
-            revision: Revision::new(1).unwrap(),
-            name: "Movies".parse().unwrap(),
-            is_default: true,
-            settings: MovieSettings {
-                quality_profile_id: QualityProfileId::try_from(1).unwrap(),
-                root_folder_id: RootFolderId::try_from(1).unwrap(),
-                tags: vec![],
-                minimum_availability: MinimumAvailability::Released,
-            },
-        };
-        service
-            .store
-            .update(|state| {
-                state.profiles.push(profile);
-                Ok(())
-            })
-            .await
-            .unwrap();
         let now = crate::monitor::unix_ms();
         service.cache.write().await.roots.insert(
-            id.clone(),
+            ManagerId::Radarr,
             RootObservation {
-                root: RootFolderId::try_from(1).unwrap(),
                 accessible: true,
                 observed_at_unix_ms: now,
             },
@@ -763,7 +699,7 @@ mod tests {
             super::TTL,
         )];
         let ready = service
-            .health_snapshot(Some(Operation::RequestMovie), Some(&id))
+            .health_snapshot(Some(Operation::RequestMovie))
             .await
             .unwrap();
         assert_eq!(ready.readiness[0].state, ReadinessState::Ready);
@@ -771,7 +707,7 @@ mod tests {
         // evidence, even when the manager's other health endpoints still work.
         service.storage_health().await;
         let blocked = service
-            .health_snapshot(Some(Operation::RequestMovie), Some(&id))
+            .health_snapshot(Some(Operation::RequestMovie))
             .await
             .unwrap();
         assert_eq!(blocked.readiness[0].state, ReadinessState::Blocked);

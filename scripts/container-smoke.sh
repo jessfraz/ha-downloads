@@ -152,9 +152,9 @@ request = urllib.request.Request(
 try:
     opener.open(request, timeout=2)
 except urllib.error.HTTPError as error:
-    assert error.code == 403
+    assert error.code == 404
 else:
-    raise AssertionError("Generated integration credential gained administration")
+    raise AssertionError("Retired settings endpoint is reachable")
 
 subprocess.check_output(["docker", "stop", "--time", "15", container])
 assert subprocess.check_output(

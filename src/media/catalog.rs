@@ -46,11 +46,15 @@ impl MediaService {
         limit: Option<u32>,
         token: Option<&str>,
     ) -> Result<Page<MediaItem>, ApiErrorCode> {
-        let (movies, coverage) = self.movie_records().await;
-        let profiles = self.profiles(Some(MediaKind::Movie)).await.items;
+        let ((movies, coverage), choices) =
+            tokio::join!(self.movie_records(), self.native_choices(ManagerId::Radarr));
+        let choices = choices?;
         let items = movies
             .into_iter()
-            .map(|movie| movie_item(movie, &profiles))
+            .map(|movie| {
+                let request = choices.movie_availability(&movie);
+                movie_item(movie, request)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         page(items, limit, token, "movies", media_key, vec![coverage])
     }
@@ -59,11 +63,17 @@ impl MediaService {
         limit: Option<u32>,
         token: Option<&str>,
     ) -> Result<Page<MediaItem>, ApiErrorCode> {
-        let (series, coverage) = self.series_records().await;
-        let profiles = self.profiles(Some(MediaKind::Series)).await.items;
+        let ((series, coverage), choices) = tokio::join!(
+            self.series_records(),
+            self.native_choices(ManagerId::Sonarr)
+        );
+        let choices = choices?;
         let items = series
             .into_iter()
-            .map(|series| series_item(series, &profiles))
+            .map(|series| {
+                let request = choices.series_availability(&series);
+                series_item(series, request)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         page(items, limit, token, "series", media_key, vec![coverage])
     }
@@ -98,13 +108,17 @@ impl MediaService {
             .ok_or(ApiErrorCode::NotFound)
     }
     pub async fn movie(&self, id: TmdbId) -> Result<MediaItem, ApiErrorCode> {
-        let movie = self.find_movie(id).await?;
-        movie_item(movie, &self.profiles(Some(MediaKind::Movie)).await.items)
+        let (movie, choices) =
+            tokio::try_join!(self.find_movie(id), self.native_choices(ManagerId::Radarr))?;
+        let request = choices.movie_availability(&movie);
+        movie_item(movie, request)
     }
     pub async fn series(&self, id: TvdbId) -> Result<MediaItem, ApiErrorCode> {
-        let series = self.find_series(id).await?;
+        let (series, choices) =
+            tokio::try_join!(self.find_series(id), self.native_choices(ManagerId::Sonarr))?;
         let native_id = series.id;
-        let mut item = series_item(series, &self.profiles(Some(MediaKind::Series)).await.items)?;
+        let request = choices.series_availability(&series);
+        let mut item = series_item(series, request)?;
         if native_id != 0 {
             let episodes = self
                 .sonarr
@@ -240,52 +254,52 @@ impl MediaService {
         limit: Option<u32>,
         token: Option<&str>,
     ) -> Result<Page<MediaItem>, ApiErrorCode> {
-        let profiles = self.profiles(None).await.items;
         let movie = async {
             if kind == SearchKind::Series {
                 return Ok(vec![]);
             }
-            self.radarr
-                .get::<Vec<UpMovie>>("movie/lookup", &[("term", query.as_str().to_owned())])
-                .await
+            let params = [("term", query.as_str().to_owned())];
+            let (movies, choices) = tokio::try_join!(
+                self.radarr.get::<Vec<UpMovie>>("movie/lookup", &params),
+                self.native_choices(ManagerId::Radarr)
+            )?;
+            movies
+                .into_iter()
+                .map(|movie| {
+                    let request = choices.movie_availability(&movie);
+                    movie_item(movie, request)
+                })
+                .collect::<Result<Vec<_>, ApiErrorCode>>()
         };
         let series = async {
             if kind == SearchKind::Movie {
                 return Ok(vec![]);
             }
-            self.sonarr
-                .get::<Vec<UpSeries>>("series/lookup", &[("term", query.as_str().to_owned())])
-                .await
+            let params = [("term", query.as_str().to_owned())];
+            let (series, choices) = tokio::try_join!(
+                self.sonarr.get::<Vec<UpSeries>>("series/lookup", &params),
+                self.native_choices(ManagerId::Sonarr)
+            )?;
+            series
+                .into_iter()
+                .map(|series| {
+                    let request = choices.series_availability(&series);
+                    series_item(series, request)
+                })
+                .collect::<Result<Vec<_>, ApiErrorCode>>()
         };
         let (movies, series) = tokio::join!(movie, series);
         let now = crate::monitor::unix_ms();
         let mut items = Vec::new();
         let mut sources = Vec::new();
-        for (component, result) in [
-            (
-                Component::Radarr,
-                movies.map(|v| {
-                    v.into_iter()
-                        .map(|m| movie_item(m, &profiles))
-                        .collect::<Result<Vec<_>, _>>()
-                }),
-            ),
-            (
-                Component::Sonarr,
-                series.map(|v| {
-                    v.into_iter()
-                        .map(|s| series_item(s, &profiles))
-                        .collect::<Result<Vec<_>, _>>()
-                }),
-            ),
-        ] {
+        for (component, result) in [(Component::Radarr, movies), (Component::Sonarr, series)] {
             if (component == Component::Radarr && kind == SearchKind::Series)
                 || (component == Component::Sonarr && kind == SearchKind::Movie)
             {
                 continue;
             }
             let cache_key = format!("{component}:{}", query.as_str());
-            match result.and_then(|v| v) {
+            match result {
                 Ok(found) => {
                     items.extend(found.clone());
                     let mut cache = self.cache.write().await;
@@ -484,55 +498,22 @@ pub(crate) fn media_key(item: &MediaItem) -> String {
         MediaItem::Series { tvdb_id, .. } => format!("series:{:010}", tvdb_id.get()),
     }
 }
-fn quality_name(id: u32, profiles: &[DownloadProfile]) -> String {
-    profiles
-        .iter()
-        .find_map(|p| match p {
-            DownloadProfile::Movie { name, settings, .. }
-                if settings.quality_profile_id.get() == id =>
-            {
-                Some(name.as_str().to_owned())
-            }
-            DownloadProfile::Series { name, settings, .. }
-                if settings.quality_profile_id.get() == id =>
-            {
-                Some(name.as_str().to_owned())
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| format!("Quality profile {id}"))
-}
-fn movie_item(movie: UpMovie, profiles: &[DownloadProfile]) -> Result<MediaItem, ApiErrorCode> {
+fn movie_item(movie: UpMovie, request: RequestAvailability) -> Result<MediaItem, ApiErrorCode> {
     let id = TmdbId::try_from(movie.tmdb_id).map_err(|_| ApiErrorCode::InvalidUpstreamResponse)?;
     let library = if movie.id == 0 {
         LibraryState::NotAdded
     } else {
         LibraryState::Managed {
             upstream_id: movie.id,
-            quality_profile_id: QualityProfileId::try_from(movie.quality_profile_id)
-                .map_err(|_| ApiErrorCode::InvalidUpstreamResponse)?,
-            quality_profile_name: quality_name(movie.quality_profile_id, profiles),
         }
     };
-    let default_profile = profiles.iter().find_map(|p| match p {
-        DownloadProfile::Movie {
-            id,
-            revision,
-            is_default: true,
-            ..
-        } => Some(MovieProfileRef {
-            id: id.clone(),
-            revision: *revision,
-        }),
-        _ => None,
-    });
     Ok(MediaItem::Movie {
         tmdb_id: id,
         title: safe_text(&movie.title, 200),
         year: (movie.year > 0).then_some(movie.year),
         overview: safe_text(&movie.overview, 2000),
         poster: (!movie.images.is_empty()).then(|| format!("api/v1/artwork/movie/{id}/poster")),
-        default_profile,
+        request,
         library,
         acquisition: if movie.has_file || movie.movie_file_id > 0 {
             Acquisition::Imported
@@ -543,30 +524,15 @@ fn movie_item(movie: UpMovie, profiles: &[DownloadProfile]) -> Result<MediaItem,
         },
     })
 }
-fn series_item(series: UpSeries, profiles: &[DownloadProfile]) -> Result<MediaItem, ApiErrorCode> {
+fn series_item(series: UpSeries, request: RequestAvailability) -> Result<MediaItem, ApiErrorCode> {
     let id = TvdbId::try_from(series.tvdb_id).map_err(|_| ApiErrorCode::InvalidUpstreamResponse)?;
     let library = if series.id == 0 {
         LibraryState::NotAdded
     } else {
         LibraryState::Managed {
             upstream_id: series.id,
-            quality_profile_id: QualityProfileId::try_from(series.quality_profile_id)
-                .map_err(|_| ApiErrorCode::InvalidUpstreamResponse)?,
-            quality_profile_name: quality_name(series.quality_profile_id, profiles),
         }
     };
-    let default_profile = profiles.iter().find_map(|p| match p {
-        DownloadProfile::Series {
-            id,
-            revision,
-            is_default: true,
-            ..
-        } => Some(SeriesProfileRef {
-            id: id.clone(),
-            revision: *revision,
-        }),
-        _ => None,
-    });
     let seasons = series
         .seasons
         .into_iter()
@@ -595,7 +561,7 @@ fn series_item(series: UpSeries, profiles: &[DownloadProfile]) -> Result<MediaIt
         year: (series.year > 0).then_some(series.year),
         overview: safe_text(&series.overview, 2000),
         poster: (!series.images.is_empty()).then(|| format!("api/v1/artwork/series/{id}/poster")),
-        default_profile,
+        request,
         library,
         acquisition: if series.id == 0 {
             Acquisition::NotRequested

@@ -73,10 +73,7 @@ async function panel(t, initialStatus = readyStatus(), options = {}) {
     const coverage = [{ source: "radarr", state: "available", observed_at_unix_ms: now }, { source: "sonarr", state: "available", observed_at_unix_ms: now }];
     const responses = {
       system: { version: "0.1.5", capabilities: { read: true, request: true, admin: true }, transport: "ingress", credential_role: "administrator" },
-      profiles: { items: [] },
-      "health/stack": { generated_at_unix_ms: now, components: [], readiness: [{ operation: "transfer", profile_id: null, state: "ready", reasons: [], expires_at_unix_ms: now + 60000 }] },
-      "managers/radarr/options": { manager: "radarr", quality_profiles: [], root_folders: [], tags: [], series_types: [] },
-      "managers/sonarr/options": { manager: "sonarr", quality_profiles: [], root_folders: [], tags: [], series_types: [] },
+      "health/stack": { generated_at_unix_ms: now, components: [], readiness: [{ operation: "transfer", state: "ready", reasons: [], expires_at_unix_ms: now + 60000 }] },
       movies: { items: [], next_page: null, coverage }, series: { items: [], next_page: null, coverage },
       queue: { items: [], next_page: null, coverage }, requests: { items: [], next_page: null, coverage },
     };
@@ -94,8 +91,6 @@ async function panel(t, initialStatus = readyStatus(), options = {}) {
   await page.waitForFunction(() => document.getElementById("connection-title").textContent !== "Checking your connection");
   if (!await page.locator("#stack-health-panel").isVisible()) await page.getByRole("button", { name: /Download stack/ }).click();
   if (!await page.locator(".protection-details").evaluate((element) => element.open)) await page.getByText("VPN and connection details", { exact: true }).click();
-  await page.locator("#advanced-downloads").waitFor({ state: "visible" });
-  await page.locator("#advanced-downloads > summary").click();
   return { page, fixture };
 }
 
@@ -135,23 +130,15 @@ test("native module failure keeps a connected VPN distinct from downloader readi
   assert.equal(await page.locator("iframe").count(), 0);
 });
 
-test("verified readiness opens the nested ingress queue and preserves a paused queue", async (t) => {
-  const status = readyStatus();
-  status.downloader.paused = true;
+test("verified native protection shows paused downloader state without embedding its controls", async (t) => {
+  const status = readyStatus(); status.downloader.paused = true;
   const { page, fixture } = await panel(t, status);
   await heading(page, "Connected and protected");
-  await heading(page, "Download queue");
-  assert.equal(await page.locator("#paused-badge").innerText(), "Queue paused");
-  assert.equal(await page.getByRole("link", { name: /Open downloads/ }).getAttribute("href"), `${base}sabnzbd/`);
-  const queue = page.frameLocator("iframe[title='SABnzbd download queue']");
-  await queue.getByRole("heading", { name: "SABnzbd queue fixture" }).waitFor({ state: "visible" });
-  await queue.getByRole("searchbox", { name: "Search queue" }).fill("Keep this search");
-  const updated = page.waitForResponse((response) => response.url() === `${base}api/v1/status`);
+  assert.equal(await page.locator("#downloader-state").innerText(), "Queue paused");
+  assert.equal(await page.locator("iframe").count(), 0);
+  assert.equal(await page.getByRole("link", { name: /Open downloads/ }).count(), 0);
   await page.clock.runFor(5001);
-  await updated;
-  await page.getByRole("button", { name: "Refresh status" }).waitFor({ state: "visible" });
-  assert.equal(await queue.getByRole("searchbox", { name: "Search queue" }).inputValue(), "Keep this search");
-  assert.equal(fixture.paths.filter((path) => path.endsWith("/sabnzbd/")).length, 1);
+  assert.equal(fixture.paths.some((path) => path.endsWith("/sabnzbd/")), false);
   assert.deepEqual(fixture.errors, []);
 });
 
@@ -180,8 +167,7 @@ test("a running process never overrides a missing tunnel or protection proof", a
   }
   fixture.status = readyStatus();
   await refresh(page);
-  await heading(page, "Download queue");
-  assert.equal(await page.locator("iframe").count(), 1);
+  assert.equal(await page.locator("iframe").count(), 0);
 });
 
 test("failed health and unknown status stay distinct from a stopped VPN and preserve diagnostic history", async (t) => {
@@ -210,7 +196,7 @@ test("failed health and unknown status stay distinct from a stopped VPN and pres
   await heading(page, "Connected and protected");
   assert.match(await page.locator("#diagnostic-history").innerText(), /Last failed-check period: 3.0 seconds/);
   assert.match(await page.locator("#diagnostic-history").innerText(), /VPN health: Request timed out/);
-  assert.equal(await page.locator("iframe").count(), 1);
+  assert.equal(await page.locator("iframe").count(), 0);
   assert.deepEqual(fixture.errors, []);
 });
 
@@ -219,23 +205,19 @@ test("unknown queue state stays neutral instead of claiming the operator paused 
   status.downloader.paused = null;
   const { page, fixture } = await panel(t, status);
   await heading(page, "Connected and protected");
-  await heading(page, "Download queue");
   assert.equal(await page.locator("#downloader-state").innerText(), "Running");
   assert.equal(await page.locator("#downloader-detail").innerText(), "Queue managed in SABnzbd.");
   assert.equal(await page.locator("#downloader-card").getAttribute("data-tone"), "neutral");
-  assert.equal(await page.locator("#paused-badge").isVisible(), false);
   fixture.status.downloader.paused = true;
   await refresh(page);
   await page.getByText("Queue paused", { exact: true }).first().waitFor({ state: "visible" });
-  assert.equal(await page.locator("#paused-badge").isVisible(), true);
   fixture.status.downloader.paused = null;
   await refresh(page);
   await page.getByText("Queue managed in SABnzbd.", { exact: true }).waitFor({ state: "visible" });
-  assert.equal(await page.locator("#paused-badge").isVisible(), false);
   assert.deepEqual(fixture.errors, []);
 });
 
-test("HTTP failure revokes stale protection and automatic retry restores the queue", async (t) => {
+test("HTTP failure revokes stale protection and automatic retry restores its verified state", async (t) => {
   const { page, fixture } = await panel(t);
   await heading(page, "Connected and protected");
   fixture.httpStatus = 503;
@@ -265,7 +247,7 @@ test("unknown responses fail closed and text and upstream URLs cannot inject nav
   assert.equal(await page.locator("#connection-message").innerText(), fixture.status.message);
   assert.equal(await page.locator("#vpn-detail").innerText(), fixture.status.vpn.provider);
   assert.equal(await page.locator("#connection-message img, #vpn-detail script").count(), 0);
-  assert.equal(await page.locator("iframe").getAttribute("src"), `${base}sabnzbd/`);
+  assert.equal(await page.locator("iframe").count(), 0);
   assert.deepEqual(fixture.errors, []);
 });
 
@@ -297,11 +279,9 @@ test("slow requests do not overlap, time out, and retry without late stale respo
   assert.deepEqual(fixture.errors, []);
 });
 
-test("page lifecycle cancels polling and rechecks before restoring the existing queue", async (t) => {
+test("page lifecycle cancels polling and refreshes protection without mounting downloader controls", async (t) => {
   const { page, fixture } = await panel(t);
   await heading(page, "Connected and protected");
-  const queue = page.frameLocator("iframe");
-  await queue.getByRole("searchbox", { name: "Search queue" }).fill("Survives page restore");
   // Browser lifecycle events exercise the shipped listeners, with no test globals.
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
   const before = fixture.requests;
@@ -309,7 +289,8 @@ test("page lifecycle cancels polling and rechecks before restoring the existing 
   assert.equal(fixture.requests, before);
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
   await heading(page, "Connected and protected");
-  assert.equal(await queue.getByRole("searchbox", { name: "Search queue" }).inputValue(), "Survives page restore");
+  assert.equal(await page.locator(".protection-details").evaluate((element) => element.open), true);
+  assert.equal(await page.locator("iframe").count(), 0);
   assert.equal(fixture.requests, before + 1);
   assert.deepEqual(fixture.errors, []);
 });
@@ -352,7 +333,6 @@ test("mobile, dark mode, reduced motion, and keyboard controls remain usable", a
     fixture.status = readyStatus();
     await refresh(page);
     await heading(page, "Connected and protected");
-    await page.frameLocator("iframe").getByRole("heading", { name: "SABnzbd queue fixture" }).waitFor({ state: "visible" });
     await page.screenshot({ path: resolve(process.env.SCREENSHOT_DIR, "downloads-ready-desktop-light.png"), fullPage: true });
   }
   assert.deepEqual(fixture.errors, []);
@@ -384,7 +364,7 @@ test("ingress follows Home Assistant theme changes independently of the system t
 });
 
 
-test("stale functional checks close the queue and retain fixed service failure details", async (t) => {
+test("stale functional checks revoke readiness and retain fixed service failure details", async (t) => {
   const status = readyStatus();
   status.health = { ready: false, reasons: ["checks_stale"], checked_at_unix_ms: 1000, age_ms: 31000, max_age_ms: 30000 };
   status.diagnostics = {

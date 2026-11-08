@@ -16,7 +16,7 @@ from custom_components.downloads.access import gateway_entity_id
 from custom_components.downloads.diagnostics import async_get_config_entry_diagnostics
 from custom_components.downloads.models import Component
 
-from .conftest import KEY, MOVIE_REQUEST, Backend
+from .conftest import KEY, MOVIE_REQUEST, Backend, health
 
 
 async def test_native_action_returns_structured_request_without_lookup_or_retry(
@@ -77,6 +77,16 @@ async def test_diagnostics_are_cached_allowlist_and_unload_removes_entities(
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert hass.states.get(entity_id).state == "unavailable"
     assert coordinator._cancel_expiry is None
+
+
+async def test_retired_profile_target_is_not_accepted_as_readiness_evidence(
+    hass: HomeAssistant, entry: DownloadsConfigEntry, backend: Backend
+) -> None:
+    response = health()
+    response["readiness"][0]["profile_id"] = "276319ec-c797-460c-a49e-6b90fc1f6ae8"
+    backend.responses[("GET", "/api/v1/health/stack")] = (200, response)
+    await entry.runtime_data.async_refresh()
+    assert not entry.runtime_data.last_update_success
 
 
 async def test_by_key_recovery_is_a_read_only_native_action(

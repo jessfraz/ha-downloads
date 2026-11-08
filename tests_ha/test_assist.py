@@ -15,7 +15,7 @@ from custom_components.downloads import DownloadsConfigEntry
 from custom_components.downloads.access import gateway_entity_id
 from custom_components.downloads.const import CONF_ALLOW_REQUESTS, DOMAIN
 
-from .conftest import MOVIE_REQUEST, Backend
+from .conftest import MOVIE_ITEM, MOVIE_REQUEST, Backend
 
 
 async def api(hass: HomeAssistant, user: MockUser, entry: DownloadsConfigEntry) -> llm.APIInstance:
@@ -71,7 +71,7 @@ async def test_native_tools_and_real_provider_schema_conversion(
     assert result.data["coverage"][0]["state"] == "unavailable"
 
 
-async def test_request_uses_exact_saved_profile_and_stable_actor_bound_key(
+async def test_request_uses_native_settings_and_stable_actor_bound_key(
     hass: HomeAssistant,
     entry: DownloadsConfigEntry,
     hass_user: MockUser,
@@ -103,7 +103,6 @@ async def test_request_keys_canonicalize_seasons_and_distinguish_new_ha_contexts
         request = {
             "kind": "series",
             "tvdb_id": 10,
-            "profile": MOVIE_REQUEST["profile"],
             "intent": {
                 "mode": "search_now",
                 "scope": {"kind": "seasons", "numbers": seasons},
@@ -146,6 +145,69 @@ async def test_uncertain_request_error_exposes_original_key_for_status_recovery(
     assert backend.requests[-1].path == f"/api/v1/request-keys/{key}"
 
 
+async def test_native_settings_error_preserves_key_and_directs_setup_to_parent(
+    hass: HomeAssistant,
+    entry: DownloadsConfigEntry,
+    hass_user: MockUser,
+    backend: Backend,
+) -> None:
+    instance = await api(hass, hass_user, entry)
+    backend.responses[("POST", "/api/v1/requests")] = (
+        409,
+        {"error_code": "native_settings_required", "message": "private native configuration"},
+    )
+    result = await call(instance, "downloads__request", {"request": MOVIE_REQUEST})
+    assert result.error and result.data["error"] == "native_settings_required"
+    writes = [item for item in backend.requests if item.method == "POST"]
+    assert len(writes) == 1
+    assert result.data["idempotency_key"] == writes[0].headers["Idempotency-Key"]
+    assert "Radarr or Sonarr" in result.data["message"]
+    assert "private native" not in result.data["message"]
+
+
+async def test_search_exposes_parent_setup_without_choosing_settings(
+    hass: HomeAssistant,
+    entry: DownloadsConfigEntry,
+    hass_user: MockUser,
+    backend: Backend,
+) -> None:
+    instance = await api(hass, hass_user, entry)
+    backend.responses[("GET", "/api/v1/search")] = (
+        200,
+        {
+            "items": [{**MOVIE_ITEM, "request": {"state": "parent_setup_required"}}],
+            "coverage": [],
+            "next_page": None,
+        },
+    )
+    count = len(backend.requests)
+    result = await call(instance, "downloads__search", {"query": "Example"})
+    assert not result.error
+    assert result.data["items"][0]["request"] == {
+        "state": "parent_setup_required",
+    }
+    assert len(backend.requests) == count + 1
+    assert backend.requests[-1].method == "GET"
+
+
+async def test_redundant_setup_manager_is_not_returned_to_assist(
+    hass: HomeAssistant,
+    entry: DownloadsConfigEntry,
+    hass_user: MockUser,
+    backend: Backend,
+) -> None:
+    instance = await api(hass, hass_user, entry)
+    backend.responses[("GET", "/api/v1/movies/14337")] = (
+        200,
+        {**MOVIE_ITEM, "request": {"state": "parent_setup_required", "manager": "sonarr"}},
+    )
+    result = await call(
+        instance, "downloads__status", {"target": {"kind": "movie", "tmdb_id": 14337}}
+    )
+    assert result.error and result.data["error"] == "invalid_response"
+    assert "request" not in result.data
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -153,9 +215,12 @@ async def test_uncertain_request_error_exposes_original_key_for_status_recovery(
         {**MOVIE_REQUEST, "tmdb_id": True},
         {**MOVIE_REQUEST, "intent": {"mode": "search_now", "force": True}},
         {
+            **MOVIE_REQUEST,
+            "profile": {"id": "276319ec-c797-460c-a49e-6b90fc1f6ae8", "revision": 1},
+        },
+        {
             "kind": "series",
             "tvdb_id": 10,
-            "profile": MOVIE_REQUEST["profile"],
             "intent": {
                 "mode": "search_now",
                 "scope": {"kind": "seasons", "numbers": [2, 2]},

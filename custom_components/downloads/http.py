@@ -23,12 +23,9 @@ from .operations import response_document
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _COMPONENT = "(?:" + "|".join(item.value for item in Component) + ")"
 _READ_ROUTES = (
-    re.compile(
-        r"system|status|health|health/stack|managers|profiles|search|movies|series|queue|requests"
-    ),
+    re.compile(r"system|status|health|health/stack|managers|search|movies|series|queue|requests"),
     re.compile(rf"health/components/{_COMPONENT}"),
-    re.compile(r"managers/(?:radarr|sonarr)/options"),
-    re.compile(rf"profiles/{_UUID}|requests/{_UUID}|request-keys/{_UUID}"),
+    re.compile(rf"requests/{_UUID}|request-keys/{_UUID}"),
     re.compile(r"movies/[1-9][0-9]*|series/[1-9][0-9]*(?:/episodes)?"),
 )
 _PAGE_QUERY = {"limit", "page_token"}
@@ -41,10 +38,8 @@ def _query_keys(path: str) -> set[str]:
         return _PAGE_QUERY
     if path.endswith("/episodes"):
         return _PAGE_QUERY | {"season"}
-    if path == "profiles":
-        return {"kind"}
     if path == "health/stack":
-        return {"operation", "profile_id"}
+        return {"operation"}
     return set()
 
 
@@ -119,10 +114,11 @@ class DownloadsView(HomeAssistantView):
         except ClientError, ResponseTooLarge:
             raise web.HTTPBadGateway from None
         try:
-            data = response_document(response)
+            data = response_document(response, path=path)
         except AccessFailure as err:
             # Only public API error codes and fixed local messages cross the bridge.
-            return _failure(err, status=response.status if 400 <= response.status < 600 else 502)
+            status = response.status if 400 <= response.status < 600 else 502
+            return _failure(err, status=status)
         headers = {
             name: value for name, value in response.headers.items() if name != "Content-Type"
         }

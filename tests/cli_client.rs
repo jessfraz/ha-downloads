@@ -1,10 +1,9 @@
 use ha_downloads::media::model::{
     Acquisition, ApiErrorCode, Capabilities, Component, ComponentHealth, CoverageState,
-    CreateRequest, CredentialRole, DownloadProfile, Freshness, HealthIssueCode, HealthOutcome,
-    HealthSnapshot, LibraryState, ManagerId, ManagerList, ManagerOptions, MediaItem,
-    MinimumAvailability, MovieIntent, MovieProfileRef, MovieSettings, Observation, Operation,
-    OperationReadiness, Page, ProfileId, ProfileInput, ProfileList, ReadinessState, RequestId,
-    RequestRecord, Revision, SourceCoverage, Submission, SystemResponse, Transport,
+    CreateRequest, CredentialRole, Freshness, HealthIssueCode, HealthOutcome, HealthSnapshot,
+    LibraryState, ManagerList, MediaItem, MovieIntent, Observation, Operation, OperationReadiness,
+    Page, ReadinessState, RequestAvailability, RequestId, RequestRecord, SourceCoverage,
+    Submission, SystemResponse, Transport,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -20,7 +19,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const PROFILE: &str = "276319ec-c797-460c-a49e-6b90fc1f6ae8";
 const REQUEST: &str = "266319ec-c797-460c-a49e-6b90fc1f6ae8";
 
 #[derive(Debug)]
@@ -210,17 +208,9 @@ fn failure(output: &Output, exit: i32, code: &str) -> Failure {
     error
 }
 
-fn profile_id() -> ProfileId {
-    PROFILE.parse().unwrap()
-}
-
 fn input() -> CreateRequest {
     CreateRequest::Movie {
         tmdb_id: 14337.try_into().unwrap(),
-        profile: MovieProfileRef {
-            id: profile_id(),
-            revision: Revision::new(7).unwrap(),
-        },
         intent: MovieIntent::SearchNow {},
     }
 }
@@ -241,9 +231,9 @@ fn movie() -> MediaItem {
         year: Some(2004),
         overview: "A time-travel film.".into(),
         poster: None,
-        default_profile: None,
         library: LibraryState::NotAdded,
         acquisition: Acquisition::NotRequested,
+        request: RequestAvailability::Ready,
     }
 }
 
@@ -254,9 +244,9 @@ fn series() -> MediaItem {
         year: Some(2026),
         overview: "A series.".into(),
         poster: None,
-        default_profile: None,
         library: LibraryState::NotAdded,
         acquisition: Acquisition::NotRequested,
+        request: RequestAvailability::Ready,
         seasons: vec![],
     }
 }
@@ -268,25 +258,6 @@ fn now_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap()
-}
-
-fn settings() -> MovieSettings {
-    MovieSettings {
-        quality_profile_id: 2.try_into().unwrap(),
-        root_folder_id: 3.try_into().unwrap(),
-        tags: vec![],
-        minimum_availability: MinimumAvailability::Released,
-    }
-}
-
-fn profile() -> DownloadProfile {
-    DownloadProfile::Movie {
-        id: profile_id(),
-        revision: Revision::new(8).unwrap(),
-        name: "Movies".parse().unwrap(),
-        is_default: true,
-        settings: settings(),
-    }
 }
 
 #[test]
@@ -325,8 +296,13 @@ fn native_system_preserves_typed_body_and_auth_without_fabricated_actor() {
 
 #[test]
 fn ha_search_is_one_encoded_page_with_partial_coverage_and_selected_credential() {
+    let mut lookup = movie();
+    let MediaItem::Movie { request, .. } = &mut lookup else {
+        panic!("movie fixture");
+    };
+    *request = RequestAvailability::ParentSetupRequired;
     let page = Page {
-        items: vec![movie()],
+        items: vec![lookup],
         next_page: Some("opaque-next-page".into()),
         coverage: vec![SourceCoverage {
             source: Component::Radarr,
@@ -357,6 +333,14 @@ fn ha_search_is_one_encoded_page_with_partial_coverage_and_selected_credential()
     assert_eq!(result.body.coverage[0].state, CoverageState::Partial);
     assert_eq!(result.body.next_page.as_deref(), Some("opaque-next-page"));
     assert_eq!(result.body.items.len(), 1);
+    assert!(matches!(
+        &result.body.items[0],
+        MediaItem::Movie {
+            request: RequestAvailability::ParentSetupRequired,
+            acquisition: Acquisition::NotRequested,
+            ..
+        }
+    ));
     let calls = fixture.captured();
     assert_eq!(calls.len(), 1);
     let url = reqwest::Url::parse(&format!("{}{}", fixture.origin, calls[0].target)).unwrap();
@@ -413,48 +397,6 @@ fn caller_request_key_and_body_are_sent_once_without_preflight_lookup() {
 }
 
 #[test]
-fn profile_replace_keeps_exact_if_match_and_returns_exact_etag() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("profile.json");
-    let input = ProfileInput::Movie {
-        name: "Movies".parse().unwrap(),
-        is_default: true,
-        settings: settings(),
-    };
-    std::fs::write(&path, serde_json::to_vec(&input).unwrap()).unwrap();
-    let fixture = Fixture::response(
-        200,
-        serde_json::to_vec(&profile()).unwrap(),
-        &[("ETag", "\"8\"")],
-        Duration::ZERO,
-    );
-    let output = cli()
-        .env("DOWNLOADS_URL", &fixture.origin)
-        .args([
-            "profiles",
-            "replace",
-            PROFILE,
-            "--if-match",
-            "\"7\"",
-            "--input",
-        ])
-        .arg(&path)
-        .output()
-        .unwrap();
-    let result = success::<DownloadProfile>(&output);
-    assert_eq!(result.etag.as_deref(), Some("\"8\""));
-    assert_eq!(result.body.revision().get(), 8);
-    let calls = fixture.captured();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].method, "PUT");
-    assert_eq!(calls[0].headers.get("if-match").unwrap(), "\"7\"");
-    assert!(matches!(
-        serde_json::from_slice::<ProfileInput>(&calls[0].body).unwrap(),
-        ProfileInput::Movie { .. }
-    ));
-}
-
-#[test]
 fn readiness_exit_uses_only_the_servers_operation_verdict_and_keeps_snapshot() {
     for (state, exit) in [(ReadinessState::Ready, 0), (ReadinessState::Blocked, 3)] {
         let now = now_ms();
@@ -470,7 +412,6 @@ fn readiness_exit_uses_only_the_servers_operation_verdict_and_keeps_snapshot() {
             }],
             readiness: vec![OperationReadiness {
                 operation: Operation::RequestMovie,
-                profile_id: Some(profile_id()),
                 state,
                 reasons: if state == ReadinessState::Ready {
                     vec![]
@@ -484,14 +425,7 @@ fn readiness_exit_uses_only_the_servers_operation_verdict_and_keeps_snapshot() {
         let fixture = Fixture::json(200, &body);
         let output = native(
             &fixture,
-            &[
-                "health",
-                "check",
-                "--operation",
-                "request_movie",
-                "--profile-id",
-                PROFILE,
-            ],
+            &["health", "check", "--operation", "request_movie"],
         );
         assert_eq!(output.status.code(), Some(exit));
         assert!(output.stderr.is_empty());
@@ -501,20 +435,18 @@ fn readiness_exit_uses_only_the_servers_operation_verdict_and_keeps_snapshot() {
         assert_eq!(calls.len(), 1);
         assert!(calls[0].target.starts_with("/api/v1/health/stack?"));
         assert!(calls[0].target.contains("operation=request_movie"));
-        assert!(calls[0].target.contains(PROFILE));
     }
 }
 
 #[test]
 fn stale_future_and_ambiguous_ready_verdicts_exit_three_with_snapshot() {
-    for case in ["stale", "future", "ambiguous", "wrong-target"] {
+    for case in ["stale", "future", "ambiguous", "wrong-operation"] {
         let now = now_ms();
         let mut body = HealthSnapshot {
             components: vec![],
             generated_at_unix_ms: now,
             readiness: vec![OperationReadiness {
                 operation: Operation::RequestMovie,
-                profile_id: Some(profile_id()),
                 state: ReadinessState::Ready,
                 reasons: vec![],
                 expires_at_unix_ms: now + 60000,
@@ -524,23 +456,13 @@ fn stale_future_and_ambiguous_ready_verdicts_exit_three_with_snapshot() {
             "stale" => body.readiness[0].expires_at_unix_ms = now - 1,
             "future" => body.generated_at_unix_ms = now + 60000,
             "ambiguous" => body.readiness.push(body.readiness[0].clone()),
-            "wrong-target" => {
-                body.readiness[0].profile_id =
-                    Some("376319ec-c797-460c-a49e-6b90fc1f6ae8".parse().unwrap())
-            }
+            "wrong-operation" => body.readiness[0].operation = Operation::RequestSeries,
             _ => unreachable!(),
         }
         let fixture = Fixture::json(200, &body);
         let output = native(
             &fixture,
-            &[
-                "health",
-                "check",
-                "--operation",
-                "request_movie",
-                "--profile-id",
-                PROFILE,
-            ],
+            &["health", "check", "--operation", "request_movie"],
         );
         assert_eq!(output.status.code(), Some(3), "{case}");
         assert!(output.stderr.is_empty());
@@ -561,8 +483,8 @@ struct ServerError<'a> {
 fn known_server_errors_are_typed_and_private_error_text_is_never_printed() {
     for (status, code) in [
         (401, ApiErrorCode::AuthenticationRequired),
-        (409, ApiErrorCode::ExistingSettingsConflict),
-        (412, ApiErrorCode::RevisionConflict),
+        (403, ApiErrorCode::PermissionDenied),
+        (409, ApiErrorCode::IdempotencyConflict),
     ] {
         let fixture = Fixture::json(
             status,
@@ -652,6 +574,13 @@ fn strict_write_inputs_and_local_limits_are_rejected_before_http() {
     for bytes in [
         b"not-json".to_vec(),
         valid
+            .replacen(
+                '{',
+                r#"{"profile":{"id":"276319ec-c797-460c-a49e-6b90fc1f6ae8","revision":1},"#,
+                1,
+            )
+            .into_bytes(),
+        valid
             .replace(
                 "\"mode\":\"search_now\"",
                 "\"mode\":\"search_now\",\"force\":true",
@@ -683,7 +612,6 @@ fn strict_write_inputs_and_local_limits_are_rejected_before_http() {
         vec!["movies", "list", "--limit", "101"],
         vec!["movies", "get", "0"],
         vec!["requests", "create"],
-        vec!["profiles", "replace", PROFILE, "--if-match", "W/\"7\""],
     ] {
         let output = native(&fixture, &args);
         assert_eq!(output.status.code(), Some(1));
@@ -695,17 +623,64 @@ fn strict_write_inputs_and_local_limits_are_rejected_before_http() {
 }
 
 #[test]
-fn home_assistant_profile_writes_are_refused_without_http() {
-    let fixture = Fixture::json(200, &profile());
+fn removed_settings_commands_and_profile_target_argument_are_rejected_before_http() {
+    let fixture = Fixture::json(200, &record());
+    for args in [
+        vec!["profiles", "list"],
+        vec!["profiles", "get", REQUEST],
+        vec!["profiles", "create", "--idempotency-key", "caller-key"],
+        vec!["profiles", "replace", REQUEST, "--if-match", "\"1\""],
+        vec!["managers", "options", "radarr"],
+        vec![
+            "health",
+            "check",
+            "--operation",
+            "request_movie",
+            "--profile-id",
+            REQUEST,
+        ],
+    ] {
+        let output = native(&fixture, &args);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let error: ha_downloads::cli::StatusError = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error.error, ha_downloads::cli::ErrorCode::Configuration);
+        assert_eq!(error.message, "Invalid arguments. Use --help for usage.");
+    }
+    assert!(fixture.captured().is_empty());
+}
+
+#[test]
+fn home_assistant_request_sends_profileless_intent_with_the_callers_uuid() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("request.json");
+    std::fs::write(&path, serde_json::to_vec(&input()).unwrap()).unwrap();
+    let fixture = Fixture::json(202, &record());
     let output = cli()
-        .env_remove("DOWNLOADS_API_TOKEN")
         .env("HOME_ASSISTANT_URL", &fixture.origin)
         .env("HOME_ASSISTANT_TOKEN", "ha-fixture-token")
-        .args(["profiles", "create", "--idempotency-key", "caller-key"])
+        .args([
+            "--transport",
+            "home-assistant",
+            "requests",
+            "create",
+            "--idempotency-key",
+            REQUEST,
+            "--input",
+        ])
+        .arg(&path)
         .output()
         .unwrap();
-    failure(&output, 1, "unsupported_transport_operation");
-    assert!(fixture.captured().is_empty());
+    success::<RequestRecord>(&output);
+    let calls = fixture.captured();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].method, "POST");
+    assert_eq!(calls[0].target, "/api/downloads/v1/requests");
+    assert_eq!(calls[0].headers.get("idempotency-key").unwrap(), REQUEST);
+    assert_eq!(
+        serde_json::from_slice::<CreateRequest>(&calls[0].body).unwrap(),
+        input()
+    );
 }
 
 #[test]
@@ -746,32 +721,25 @@ fn remaining_read_commands_use_the_documented_single_request_routes() {
         &ManagerList { items: vec![] },
         "/api/v1/managers",
     );
-    read_route(
-        &["managers", "options", "radarr"],
-        &ManagerOptions {
-            manager: ManagerId::Radarr,
-            quality_profiles: vec![],
-            root_folders: vec![],
-            tags: vec![],
-            series_types: vec![],
-        },
-        "/api/v1/managers/radarr/options",
-    );
-    read_route(
-        &["profiles", "list", "--kind", "movie"],
-        &ProfileList { items: vec![] },
-        "/api/v1/profiles?kind=movie",
-    );
-    read_route(
-        &["profiles", "get", PROFILE],
-        &profile(),
-        &format!("/api/v1/profiles/{PROFILE}"),
-    );
-    read_route(
-        &["movies", "get", "14337"],
-        &movie(),
-        "/api/v1/movies/14337",
-    );
+    let mut managed = movie();
+    let MediaItem::Movie { library, .. } = &mut managed else {
+        panic!("movie fixture");
+    };
+    *library = LibraryState::Managed { upstream_id: 23 };
+    let fixture = Fixture::json(200, &managed);
+    let result = success::<MediaItem>(&native(&fixture, &["movies", "get", "14337"]));
+    assert!(matches!(
+        result.body,
+        MediaItem::Movie {
+            library: LibraryState::Managed { upstream_id: 23 },
+            request: RequestAvailability::Ready,
+            ..
+        }
+    ));
+    let calls = fixture.captured();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].method, "GET");
+    assert_eq!(calls[0].target, "/api/v1/movies/14337");
     read_route(
         &["movies", "list", "--limit", "1"],
         &Page::<MediaItem> {
