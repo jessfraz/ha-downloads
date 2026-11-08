@@ -117,11 +117,26 @@ quality-profile names/IDs or folder-selection metadata.
 | `requests lookup --idempotency-key KEY` | Recover the original submission after an uncertain response |
 | `requests create --input FILE --idempotency-key KEY` | Submit a typed movie/series request |
 | `queue list` | One acquisition queue page |
+| `queue get radarr:123` / `queue get sonarr:456` | Fresh release, transfer and import details for one queue entry |
+| `imports list [--since UTC]` | Recent native imports with separate Plex/subtitle evidence |
 
 All paginated commands accept `--limit 1..100` and `--page-token TOKEN`. Each
 invocation fetches exactly one page. Preserve `next_page` and `coverage`; an
 unavailable/partial source is not an empty library. Search is passed to the
 server as data, not interpreted as a URL.
+
+Queue detail IDs are canonical positive native IDs prefixed by their manager.
+Missing entries return 404 after a complete native read; unavailable evidence
+returns 503. Details include observed release quality, progress, ETA, client,
+indexer, protocol and safe import warnings. These are read-only facts, with no
+quality-profile or downloader configuration controls.
+
+Imports include work initiated directly in Radarr or Sonarr. The recent window
+contains up to 1,000 successful imports per manager, with partial coverage for
+older history. Optional `--since` is an inclusive timestamp and binds page
+cursors. Import IDs identify history records, independently of queue IDs.
+Plex/subtitle verification applies only to the same imported file, never a
+title match or a healthy server alone. Unavailable evidence remains explicit.
 
 Health component names are `radarr`, `sonarr`, `prowlarr`, `sabnzbd`, `vpn`,
 `firewall`, `dns`, `storage`, and `plex`. Operations are `request_movie`,

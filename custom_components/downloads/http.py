@@ -23,9 +23,12 @@ from .operations import response_document
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _COMPONENT = "(?:" + "|".join(item.value for item in Component) + ")"
 _READ_ROUTES = (
-    re.compile(r"system|status|health|health/stack|managers|search|movies|series|queue|requests"),
+    re.compile(
+        r"system|status|health|health/stack|managers|search|movies|series|queue|requests|imports"
+    ),
     re.compile(rf"health/components/{_COMPONENT}"),
     re.compile(rf"requests/{_UUID}|request-keys/{_UUID}"),
+    re.compile(r"queue/(?:radarr|sonarr):[1-9][0-9]*"),
     re.compile(r"movies/[1-9][0-9]*|series/[1-9][0-9]*(?:/episodes)?"),
 )
 _PAGE_QUERY = {"limit", "page_token"}
@@ -34,8 +37,8 @@ _PAGE_QUERY = {"limit", "page_token"}
 def _query_keys(path: str) -> set[str]:
     if path == "search":
         return _PAGE_QUERY | {"query", "kind"}
-    if path in {"movies", "series", "queue", "requests"}:
-        return _PAGE_QUERY
+    if path in {"movies", "series", "queue", "requests", "imports"}:
+        return _PAGE_QUERY | {"since"} if path == "imports" else _PAGE_QUERY
     if path.endswith("/episodes"):
         return _PAGE_QUERY | {"season"}
     if path == "health/stack":

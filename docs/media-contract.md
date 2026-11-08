@@ -59,7 +59,16 @@ an explicit user-ID allowlist; administrators can request through ingress.
 - `GET /series/{tvdb_id}`: series detail, including seasons.
 - `GET /series/{tvdb_id}/episodes?season=2&limit=20&page_token=TOKEN`: episode page.
 - `GET /queue?limit=20&page_token=TOKEN`: acquisition queue page.
+- `GET /queue/{queue_id}`: fresh, read-only `DownloadDetails`. IDs retain the
+  canonical `radarr:123|sonarr:456` form with a positive native signed integer.
+  A disappeared entry returns 404 only after a complete successful native read;
+  unavailable or incomplete evidence returns 503.
 - `GET /requests?limit=20&page_token=TOKEN`: actor-scoped receipt page.
+- `GET /imports?limit=20&page_token=TOKEN&since=UTC`: recent successful native
+  imports from Radarr and Sonarr, including titles requested directly in those
+  apps. `since` is optional, inclusive and validated before provider reads;
+  cursors bind its UTC instant. The window contains up to 1,000 imports per
+  manager and reports partial coverage when older records are omitted.
 - `GET /requests/{request_id}`: actor-scoped receipt, or administrator inspection.
 - `GET /request-keys/{key}`: original actor-scoped receipt, or 404. An in-flight
   submission may still accept later; preserve its original key and input.
@@ -100,6 +109,34 @@ state`; unproven counts are null. State is
 `unknown|missing|partial|in_progress|imported`. `Episode` contains
 `id,season,number,title,air_date,monitored,acquisition`. `QueueItem` contains
 `id,media,title,episode,acquisition`; media is a canonical movie/series identity.
+
+Optional `MediaItem.metadata` contains observed runtime, genres and
+certification. Movies also include studio and an optional imported `file`
+with actual quality, size, video/audio codecs and audio channels. Series include
+network and next airing. Missing evidence is null, never a default setting.
+
+`DownloadDetails` contains `id,manager,media,title,episode,acquisition,status,
+quality,progress,remaining_seconds,download_client,indexer,protocol,
+import_status,warnings,languages,custom_formats,custom_format_score,added_at,
+estimated_completion_at,observed_at_unix_ms`. Status is
+`queued|paused|downloading|completed|failed|unknown`; import status is
+`not_started|pending|importing|imported|failed|unknown`. Protocol is
+`usenet|torrent|unknown` or null. A completed transfer does not imply import.
+Progress contains completed/total/remaining bytes, or null when unknown.
+Quality describes the actual release, including name, resolution, source,
+modifier and revision. It never describes or edits a quality profile.
+Warnings use closed code/severity values and bounded safe messages. Native
+paths, download IDs, credentials and configuration are not exposed.
+
+`ImportedItem` contains `id,manager,media,title,episode,imported_at,quality,
+plex,subtitles,observed_at_unix_ms`. Its ID is a typed native history ID, not a
+queue ID. Only successful native import events produce these records.
+Plex evidence is `not_configured|unavailable|unknown|verified`; unknown and
+unavailable states carry closed reasons. Verification requires canonical
+identity, the same imported file and size, current Plex metadata, and file
+availability. Subtitle evidence is `unknown|verified|missing`; verified
+languages belong to that same imported file. These checks do not test playback
+or establish that every preferred subtitle language is present.
 
 ## Requests
 
@@ -145,6 +182,12 @@ Operations: `request_movie|request_series|transfer|import_movie|import_series`.
 Observations distinguish never-checked, fresh/stale, healthy, degraded,
 unavailable and not-configured. Issues have fixed safe code/severity/message.
 Update warnings remain visible without blocking unrelated operations.
+When running under Supervisor, a Prowlarr available-version notice is shown
+only when Home Assistant reports an available package for the same configured
+installation. Unknown package evidence suppresses that availability notice;
+functional warnings and failed update checks remain visible. The default
+Supervisor role grants read-only info access for this check. Standalone
+installations retain native update notices.
 
 Readiness is `{operation,state,reasons,expires_at_unix_ms}`. Expiry uses only
 required evidence. Destination proof comes from current native roots; staging
@@ -162,3 +205,26 @@ CLI and HA use these same resources and models. The companion exposes no
 settings controls; Assist resolves canonical IDs, preserves native choices,
 and reports actual status. No tool edits profiles, forces releases, or controls
 VPN/power/access.
+
+## Home Assistant completion notifications
+
+The companion observes native imports independently of health polling and
+request receipts. Its first enablement establishes a quiet baseline; existing
+history remains visible in Activity without flooding Notifications. New
+imports create a native persistent notification. Plex and subtitle evidence
+update that same notification ID instead of creating a second notice.
+
+Native import IDs, compact delivery ledgers and separate ready-event state
+survive reload/restart. Out-of-order imports remain eligible. Store writes are
+read back before further observations advance state. Identical evidence,
+corrected titles and reordered language lists do not repeat completion events.
+`downloads_media_imported` and `downloads_media_ready` include stable
+`import_id`, canonical `media`, `imported_at`, `plex_verified` and
+`subtitles_verified`. Ready requires both verification flags. Automation events
+are delivered at least once: consumers can deduplicate `import_id` across a
+crash between notification dispatch and persistence.
+
+The read-only `downloads.imports` action and `downloads__imports` Assist tool
+use the same bounded resource and existing user/exposure permissions. Neither
+requests media or changes settings. An inaccessible Plex library stays
+unverified even when the Plex server health check succeeds.

@@ -11,9 +11,11 @@ from homeassistant.exceptions import ServiceValidationError
 from .access import current_guard
 from .const import DOMAIN
 from .operations import (
+    IMPORTS_SCHEMA,
     REQUEST_SCHEMA,
     SEARCH_SCHEMA,
     STATUS_SCHEMA,
+    async_imports,
     async_request,
     async_search,
     async_status,
@@ -28,6 +30,8 @@ def async_register_services(hass: HomeAssistant) -> None:
                 return await async_search(guard, call.data)
             if call.service == "request":
                 return await async_request(guard, call.data)
+            if call.service == "imports":
+                return await async_imports(guard, call.data)
             return await async_status(guard, call.data)
         except ValueError:
             raise ServiceValidationError("Use the declared Downloads action fields.") from None
@@ -36,6 +40,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         ("search", SEARCH_SCHEMA),
         ("request", REQUEST_SCHEMA),
         ("status", STATUS_SCHEMA),
+        ("imports", IMPORTS_SCHEMA),
     ):
         hass.services.async_register(
             DOMAIN, name, handle, schema=schema, supports_response=SupportsResponse.ONLY

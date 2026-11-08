@@ -1,5 +1,6 @@
 """Prove the deployed protection monitor survives deliberate media pairing."""
 
+import re
 from dataclasses import replace
 from uuid import UUID
 
@@ -94,6 +95,7 @@ async def test_same_entry_media_pairing_preserves_problem_device_and_health_only
         },
     )
     aioclient_mock.get(origin + "/api/v1/health/stack", json=health())
+    aioclient_mock.get(re.compile(re.escape(origin + "/api/v1/imports") + r"\?.*"), status=404)
     calls = aioclient_mock.call_count
     flow = await hass.config_entries.flow.async_init(
         DOMAIN,
@@ -146,6 +148,7 @@ async def test_same_entry_media_pairing_preserves_problem_device_and_health_only
         "downloads__health",
         "downloads__search",
         "downloads__status",
+        "downloads__imports",
     }
     without_assistant = replace(combined, llm_context=replace(combined.llm_context, assistant=None))
     denied = await without_assistant.async_call_tool(

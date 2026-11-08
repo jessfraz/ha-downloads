@@ -14,6 +14,7 @@ from homeassistant.util import dt as dt_util
 
 from .client import Actor, DownloadsClient, ResponseTooLarge
 from .const import API_PREFIX, DOMAIN
+from .imports import ImportNotifications
 from .models import HealthSnapshot, System
 from .native_health import NativeHealthCoordinator
 from .repairs import async_clear, async_report, async_update_components
@@ -47,6 +48,7 @@ class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
         self.entry = entry
         self.native_health = native_health
         self.system: System | None = None
+        self.import_notifications: ImportNotifications | None = None
         self._cancel_expiry: Callable[[], None] | None = None
         entry.async_on_unload(self.async_cancel_expiry)
 

@@ -148,6 +148,7 @@ def async_update_components(
                         item.code.value
                         for item in component.issues
                         if item.code not in _UNKNOWN_ISSUES
+                        and item.code is not HealthIssueCode.UPDATE_AVAILABLE
                     }
                 )
             )
@@ -160,6 +161,11 @@ def async_update_components(
                 async_report(
                     hass, entry, key, component.component.value.title(), codes, severity=severity
                 )
+            elif component.issues and all(
+                item.code is HealthIssueCode.UPDATE_AVAILABLE for item in component.issues
+            ):
+                # Available packages belong to HA Updates, not service-failure Repairs.
+                async_clear(hass, entry, key)
 
 
 @callback

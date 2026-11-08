@@ -4,8 +4,10 @@ Downloads runs Gluetun and SABnzbd in one private container network namespace.
 NET_ADMIN, NET_RAW and `/dev/net/tun` are requested. The app does not use host
 networking/PID/IPC, the Docker socket, Home Assistant API access, Supervisor
 management privileges, or arbitrary user-supplied environment overrides.
-The default Supervisor role uses only self-info and scoped discovery for the
-optional companion; no broad HA or Supervisor API privilege is requested.
+The default Supervisor role uses info reads and scoped discovery for the
+optional companion. Read-only Supervisor info access proves whether the exact
+configured Prowlarr installation has an HA package update. No manager or admin
+Supervisor role is requested.
 
 Gluetun is the VPN, firewall kill switch, and DNS authority. SABnzbd must not
 start until the tunnel and resolver are ready. Tunnel failure does not authorize
@@ -13,8 +15,8 @@ direct WAN access. No supported option disables the VPN or kill switch. Local
 subnet exceptions must be narrow and validated; IPv6 fallback must be tested.
 
 HA ingress peer and user validation are required for the UI. Authenticated
-users may read; allowlisted users may request; only administrators may edit
-profiles or open the SABnzbd browser. Direct status uses a read-only bearer
+users may read; allowlisted users may request; only administrators may open
+the SABnzbd browser. Native apps own configuration. Direct status uses a read-only bearer
 token. Separate requester, administrator and integration credentials must be
 distinct. Only the integration credential may delegate authenticated HA actors,
 never administration. The HA bridge accepts no forwarded actor assertions.
@@ -22,8 +24,9 @@ Proxied SABnzbd API requests retain SABnzbd's API-key checks. The CONNECT
 proxy is for trusted internal clients and has no default host port mapping.
 Mapping a port does not make it safe for an untrusted network.
 
-Supervisor discovery uses its documented private `http://supervisor` API.
-The client fixes the two endpoint paths and disables proxies and redirects.
+Supervisor discovery and info reads use the documented private
+`http://supervisor` API. Clients constrain endpoint paths, bound responses,
+and disable proxies and redirects.
 This platform transport is separate from configurable manager connections;
 the Supervisor token and private app network remain trusted HA infrastructure.
 

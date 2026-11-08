@@ -1,3 +1,14 @@
+# 0.4.0
+
+- Keep title and download details in a modal over the originating tab, with
+  richer native release/file details and restorable URL history.
+- Show completed imports from Radarr and Sonarr, including requests started
+  directly in those apps. Notify Home Assistant after new imports and report
+  Plex and subtitle verification separately.
+- Gate Prowlarr availability notices on an actual Home Assistant package update.
+- Add read-only queue details and import history to the API and CLI; expose
+  import history through native HA actions and Assist.
+
 # 0.3.1
 
 - Report confirmed Downloads and media-service failures in native Home Assistant

@@ -124,6 +124,10 @@
     "status": {
       "name": "Read media status",
       "description": "Read a request, original idempotency key, movie, or TV status without retrying a write."
+    },
+    "imports": {
+      "name": "Read recent imports",
+      "description": "Read completed imports from Radarr and Sonarr with separate Plex and subtitle evidence. Includes media requested directly in those apps."
     }
   },
   "issues": {

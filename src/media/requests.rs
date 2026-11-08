@@ -730,7 +730,7 @@ fn aired(episode: &UpEpisode, cutoff: &str) -> bool {
 }
 // Native timestamps must be real UTC instants. Unknown/malformed airtimes are
 // not eligible for an aired-only request, including offset or date-only input.
-fn utc_instant(value: &str) -> Option<(u16, u8, u8, u8, u8, u8, u32)> {
+pub(crate) fn utc_instant(value: &str) -> Option<(u16, u8, u8, u8, u8, u8, u32)> {
     let bytes = value.as_bytes();
     if bytes.len() < 20
         || bytes.get(4) != Some(&b'-')
@@ -850,6 +850,7 @@ mod tests {
             has_file: false,
             movie_file_id: 0,
             tags: vec![],
+            metadata: crate::media::upstream::UpMovieMetadata::default(),
         };
         let mut request = StoredRequest {
             actor: "fixture".into(),

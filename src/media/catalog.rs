@@ -522,6 +522,7 @@ fn movie_item(movie: UpMovie, request: RequestAvailability) -> Result<MediaItem,
         } else {
             Acquisition::NotRequested
         },
+        metadata: crate::media::details::movie_metadata(&movie),
     })
 }
 fn series_item(series: UpSeries, request: RequestAvailability) -> Result<MediaItem, ApiErrorCode> {
@@ -533,6 +534,7 @@ fn series_item(series: UpSeries, request: RequestAvailability) -> Result<MediaIt
             upstream_id: series.id,
         }
     };
+    let metadata = crate::media::details::series_metadata(&series);
     let seasons = series
         .seasons
         .into_iter()
@@ -569,6 +571,7 @@ fn series_item(series: UpSeries, request: RequestAvailability) -> Result<MediaIt
             Acquisition::Unknown
         },
         seasons,
+        metadata,
     })
 }
 fn season_state(total: u32, imported: u32, active: u32) -> SeasonState {
@@ -582,32 +585,29 @@ fn season_state(total: u32, imported: u32, active: u32) -> SeasonState {
         SeasonState::Missing
     }
 }
-fn queue_acquisition(queue: &UpQueue) -> Acquisition {
+pub(crate) fn queue_acquisition(queue: &UpQueue) -> Acquisition {
     match (
         queue.tracked_download_status.as_str(),
         queue.tracked_download_state.as_str(),
         queue.status.as_str(),
     ) {
+        (_, "importBlocked", _) => Acquisition::Blocked {
+            reason: AcquisitionBlock::ImportFailed,
+        },
+        (_, "failedPending" | "failed", _) => Acquisition::Blocked {
+            reason: AcquisitionBlock::DownloadFailed,
+        },
         ("error", _, _) => Acquisition::Blocked {
             reason: AcquisitionBlock::DownloadFailed,
         },
         (_, "importPending" | "importing", _) => Acquisition::Importing,
-        (_, "importFailed", _) => Acquisition::Blocked {
-            reason: AcquisitionBlock::ImportFailed,
-        },
         (_, _, "completed") => Acquisition::Importing,
-        (_, _, "downloading")
-            if queue.size.is_finite()
-                && queue.sizeleft.is_finite()
-                && queue.size > 0.0
-                && queue.sizeleft >= 0.0
-                && queue.sizeleft <= queue.size =>
-        {
-            Acquisition::Downloading {
-                completed_bytes: (queue.size - queue.sizeleft) as u64,
-                total_bytes: queue.size as u64,
-            }
-        }
+        (_, _, "downloading") => crate::media::details::progress(queue)
+            .map(|progress| Acquisition::Downloading {
+                completed_bytes: progress.completed_bytes,
+                total_bytes: progress.total_bytes,
+            })
+            .unwrap_or(Acquisition::Unknown),
         _ => Acquisition::Waiting,
     }
 }

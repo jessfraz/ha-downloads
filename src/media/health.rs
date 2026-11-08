@@ -2,6 +2,7 @@ use crate::{
     media::{
         model::*,
         service::{MediaService, RootObservation},
+        supervisor::{UpdateAvailability, UpdateSource},
         upstream::{UpHealth, UpRoot, UpStatus, read_bytes},
     },
     status::{DownloaderState, Verification, VpnState},
@@ -21,9 +22,12 @@ impl MediaService {
     }
     async fn refresh_health(&self) {
         let (radarr, sonarr, prowlarr, sab) = tokio::join!(
-            manager_health(&self.radarr),
-            manager_health(&self.sonarr),
-            manager_health(&self.prowlarr),
+            manager_health(&self.radarr, None),
+            manager_health(&self.sonarr, None),
+            manager_health(
+                &self.prowlarr,
+                Some((&self.updates, &self.config.prowlarr.url))
+            ),
             self.sab_health()
         );
         let now = crate::monitor::unix_ms();
@@ -508,23 +512,50 @@ fn issue(code: HealthIssueCode, message: &str) -> HealthIssue {
         message: message.into(),
     }
 }
-async fn manager_health(up: &crate::media::upstream::Upstream) -> HealthOutcome {
+async fn manager_health(
+    up: &crate::media::upstream::Upstream,
+    updates: Option<(&UpdateSource, &str)>,
+) -> HealthOutcome {
     if !up.configured() {
         return HealthOutcome::NotConfigured;
     }
-    let result = tokio::try_join!(
-        up.get::<UpStatus>("system/status", &[]),
-        up.get::<Vec<UpHealth>>("health", &[])
+    let (result, update) = tokio::join!(
+        async {
+            tokio::try_join!(
+                up.get::<UpStatus>("system/status", &[]),
+                up.get::<Vec<UpHealth>>("health", &[])
+            )
+        },
+        async {
+            match updates {
+                Some((source, origin)) => source.prowlarr(origin).await,
+                None => UpdateAvailability::Standalone,
+            }
+        }
     );
     match result {
         Ok((_, health)) => {
             let mut issues = Vec::<HealthIssue>::new();
             for h in health {
-                if routine_release_notice(&h) {
+                if updates.is_none() && routine_release_notice(&h) {
                     continue;
                 }
                 let source = h.source.to_ascii_lowercase();
-                let code = if source.contains("indexer") {
+                // Prowlarr uses UpdateCheck for genuine failures too. Only its
+                // native available-version reason is governed by HA packaging.
+                let available_notice = source == "updatecheck"
+                    && h.severity.eq_ignore_ascii_case("warning")
+                    && (h
+                        .wiki_url
+                        .rsplit_once('#')
+                        .is_some_and(|(_, fragment)| fragment == "new-update-is-available")
+                        || routine_release_notice(&h));
+                if available_notice && !update.allows_notice() {
+                    continue;
+                }
+                let code = if available_notice {
+                    HealthIssueCode::UpdateAvailable
+                } else if source.contains("indexer") {
                     HealthIssueCode::IndexerUnavailable
                 } else if source.contains("downloadclient") {
                     HealthIssueCode::DownloadClientUnavailable
@@ -553,6 +584,12 @@ async fn manager_health(up: &crate::media::upstream::Upstream) -> HealthOutcome 
                             "A download client needs attention."
                         }
                         HealthIssueCode::StorageUnavailable => "Storage needs attention.",
+                        HealthIssueCode::UpdateAvailable => match update {
+                            UpdateAvailability::HomeAssistant(_) => {
+                                "An update is available in Home Assistant."
+                            }
+                            UpdateAvailability::Standalone => "An update is available.",
+                        },
                         HealthIssueCode::UpstreamHealth if source == "updatecheck" => {
                             "The service's update check needs attention."
                         }

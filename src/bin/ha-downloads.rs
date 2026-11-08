@@ -1,9 +1,10 @@
 //! One-request transport client. The server owns policy, readiness and identity.
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use ha_downloads::media::model::{
-    ApiErrorCode, Component, ComponentHealth, CreateRequest, Episode, HealthSnapshot, ManagerList,
-    MediaItem, Operation, Page, QueueItem, ReadinessState, RequestId, RequestRecord, SearchKind,
-    SearchQuery, SystemResponse, TmdbId, TvdbId,
+    ApiErrorCode, Component, ComponentHealth, CreateRequest, DownloadDetails, Episode,
+    HealthSnapshot, ImportSince, ImportedItem, ManagerList, MediaItem, Operation, Page, QueueId,
+    QueueItem, ReadinessState, RequestId, RequestRecord, SearchKind, SearchQuery, SystemResponse,
+    TmdbId, TvdbId,
 };
 use reqwest::{Client, Method, RequestBuilder, Url, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -177,6 +178,9 @@ enum MediaCommand {
     Requests(Requests),
     #[command(subcommand)]
     Queue(Queue),
+    /// Recent successful native imports, including titles added directly to a manager.
+    #[command(subcommand)]
+    Imports(Imports),
 }
 
 #[derive(Subcommand)]
@@ -237,6 +241,21 @@ enum Requests {
 #[derive(Subcommand)]
 enum Queue {
     List(PageArgs),
+    /// Read one download's release, transfer, and import details.
+    Get {
+        id: QueueId,
+    },
+}
+
+#[derive(Subcommand)]
+enum Imports {
+    List {
+        #[command(flatten)]
+        page: PageArgs,
+        /// Include successful native imports at or after this UTC instant.
+        #[arg(long)]
+        since: Option<ImportSince>,
+    },
 }
 
 #[derive(Args)]
@@ -636,6 +655,17 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         MediaCommand::Queue(Queue::List(page)) => {
             api.print::<Page<QueueItem>>(page.apply(api.request(Method::GET, "queue")?))
                 .await
+        }
+        MediaCommand::Queue(Queue::Get { id }) => {
+            api.print::<DownloadDetails>(api.request(Method::GET, &format!("queue/{id}"))?)
+                .await
+        }
+        MediaCommand::Imports(Imports::List { page, since }) => {
+            let mut request = page.apply(api.request(Method::GET, "imports")?);
+            if let Some(since) = since {
+                request = request.query(&[("since", since.as_str())]);
+            }
+            api.print::<Page<ImportedItem>>(request).await
         }
     }
 }

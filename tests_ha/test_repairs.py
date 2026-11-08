@@ -163,6 +163,28 @@ async def test_media_repairs_preserve_failed_checks_even_with_warning_severity(
     assert registry.async_get_issue(DOMAIN, issue_id) is None
 
 
+async def test_available_home_assistant_package_is_not_a_functional_repair(
+    hass: HomeAssistant, entry: DownloadsConfigEntry, backend: Backend
+) -> None:
+    registry = ir.async_get(hass)
+    issue_id = f"{entry.entry_id}_component_prowlarr"
+    response = health()
+    prowlarr = next(item for item in response["components"] if item["component"] == "prowlarr")
+    notice = {"code": "update_available", "severity": "warning", "message": "Available in HA"}
+    failure = {"code": "indexer_unavailable", "severity": "warning", "message": "Safe fixed text"}
+    prowlarr["observation"]["outcome"] = {"state": "degraded", "issues": [notice]}
+    backend.responses[("GET", "/api/v1/health/stack")] = (200, response)
+    await entry.runtime_data.async_refresh()
+    assert registry.async_get_issue(DOMAIN, issue_id) is None
+    prowlarr["observation"]["outcome"]["issues"].append(failure)
+    await entry.runtime_data.async_refresh()
+    issue = registry.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None and issue.data == {"codes": "indexer_unavailable"}
+    prowlarr["observation"]["outcome"]["issues"] = [notice]
+    await entry.runtime_data.async_refresh()
+    assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+
 @pytest.mark.parametrize("gap", ["missing", "stale", "future"])
 async def test_incomplete_media_evidence_is_a_native_unknown_repair(
     hass: HomeAssistant, entry: DownloadsConfigEntry, backend: Backend, gap: str

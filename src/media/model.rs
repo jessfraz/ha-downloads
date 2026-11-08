@@ -215,12 +215,125 @@ string_enum!(Transport{Native=>"native",Ingress=>"ingress",HomeAssistant=>"home_
 string_enum!(CredentialRole{ReadOnly=>"read_only",Requester=>"requester",Administrator=>"administrator",Integration=>"integration"});
 string_enum!(UnavailableReason{Timeout=>"timeout",Connection=>"connection",Authentication=>"authentication",InvalidResponse=>"invalid_response",NotRunning=>"not_running"});
 string_enum!(IssueSeverity{Warning=>"warning",Error=>"error"});
-string_enum!(HealthIssueCode{UpstreamHealth=>"upstream_health",IndexerUnavailable=>"indexer_unavailable",DownloadClientUnavailable=>"download_client_unavailable",StorageUnavailable=>"storage_unavailable",StorageLow=>"storage_low",ProtectionUnverified=>"protection_unverified",ChecksMissing=>"checks_missing",ChecksStale=>"checks_stale",NotConfigured=>"not_configured",UpstreamUnavailable=>"upstream_unavailable"});
+string_enum!(HealthIssueCode{UpdateAvailable=>"update_available",UpstreamHealth=>"upstream_health",IndexerUnavailable=>"indexer_unavailable",DownloadClientUnavailable=>"download_client_unavailable",StorageUnavailable=>"storage_unavailable",StorageLow=>"storage_low",ProtectionUnverified=>"protection_unverified",ChecksMissing=>"checks_missing",ChecksStale=>"checks_stale",NotConfigured=>"not_configured",UpstreamUnavailable=>"upstream_unavailable"});
 string_enum!(ReadinessState{Ready=>"ready",Blocked=>"blocked"});
 string_enum!(AcquisitionBlock{ImportFailed=>"import_failed",DownloadFailed=>"download_failed",ReleaseRejected=>"release_rejected",Unknown=>"unknown"});
 string_enum!(RequestEffect{Added=>"added",AlreadyManaged=>"already_managed",AlreadySatisfied=>"already_satisfied"});
 string_enum!(ReconciliationReason{UpstreamOutcomeUnknown=>"upstream_outcome_unknown",DependencyUnavailable=>"dependency_unavailable",RestartedDuringWrite=>"restarted_during_write"});
 string_enum!(ApiErrorCode{AuthenticationRequired=>"authentication_required",InvalidArguments=>"invalid_arguments",PermissionDenied=>"permission_denied",NotFound=>"not_found",NotConfigured=>"not_configured",NativeSettingsRequired=>"native_settings_required",UpstreamUnavailable=>"upstream_unavailable",InvalidUpstreamResponse=>"invalid_upstream_response",ExistingSettingsConflict=>"existing_settings_conflict",IdempotencyConflict=>"idempotency_conflict",InvalidScope=>"invalid_scope",PreconditionRequired=>"precondition_required",UnsupportedTransportOperation=>"unsupported_transport_operation"});
+string_enum!(DownloadStatus{Queued=>"queued",Paused=>"paused",Downloading=>"downloading",Completed=>"completed",Failed=>"failed",Unknown=>"unknown"});
+string_enum!(DownloadProtocol{Usenet=>"usenet",Torrent=>"torrent",Unknown=>"unknown"});
+string_enum!(DownloadImportStatus{NotStarted=>"not_started",Pending=>"pending",Importing=>"importing",Imported=>"imported",Failed=>"failed",Unknown=>"unknown"});
+string_enum!(DownloadWarningCode{DownloadFailed=>"download_failed",ImportFailed=>"import_failed",ImportBlocked=>"import_blocked",ProviderWarning=>"provider_warning",ProviderError=>"provider_error"});
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(try_from = "String", into = "String")]
+pub struct QueueId {
+    manager: ManagerId,
+    native_id: NonZeroU32,
+}
+
+/// A validated UTC filter shared by command-line and service callers.
+#[derive(Clone, Debug)]
+pub struct ImportSince(String);
+impl ImportSince {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl FromStr for ImportSince {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        crate::media::requests::utc_instant(value).ok_or("Expected a valid UTC timestamp")?;
+        Ok(Self(value.to_owned()))
+    }
+}
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ImportId(QueueId);
+impl ImportId {
+    pub(crate) fn new(manager: ManagerId, native_id: u32) -> Result<Self, &'static str> {
+        format!("{manager}:{native_id}")
+            .parse::<QueueId>()
+            .map(Self)
+    }
+    pub fn manager(self) -> ManagerId {
+        self.0.manager()
+    }
+    pub fn native_id(self) -> u32 {
+        self.0.native_id()
+    }
+}
+impl FromStr for ImportId {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse::<QueueId>().map(Self)
+    }
+}
+impl fmt::Display for ImportId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl QueueId {
+    pub fn manager(self) -> ManagerId {
+        self.manager
+    }
+    pub fn native_id(self) -> u32 {
+        self.native_id.get()
+    }
+}
+impl FromStr for QueueId {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (manager, id) = value.split_once(':').ok_or("Invalid queue ID")?;
+        let manager = ManagerId::from_str(manager)?;
+        let id = id.parse::<u32>().map_err(|_| "Invalid queue ID")?;
+        if id == 0 || id > i32::MAX as u32 {
+            return Err("Invalid queue ID");
+        }
+        let parsed = Self {
+            manager,
+            native_id: NonZeroU32::new(id).ok_or("Invalid queue ID")?,
+        };
+        if parsed.to_string() != value {
+            return Err("Invalid queue ID");
+        }
+        Ok(parsed)
+    }
+}
+impl TryFrom<String> for QueueId {
+    type Error = &'static str;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+impl From<QueueId> for String {
+    fn from(value: QueueId) -> Self {
+        value.to_string()
+    }
+}
+impl fmt::Display for QueueId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.manager, self.native_id)
+    }
+}
+impl JsonSchema for QueueId {
+    fn schema_name() -> String {
+        "QueueId".into()
+    }
+    fn json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            string: Some(Box::new(schemars::schema::StringValidation {
+                pattern: Some("^(radarr|sonarr):[1-9][0-9]{0,9}$".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -357,6 +470,33 @@ pub struct Season {
     pub state: SeasonState,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MovieMetadata {
+    pub runtime_minutes: Option<u32>,
+    pub genres: Vec<String>,
+    pub studio: Option<String>,
+    pub certification: Option<String>,
+    pub file: Option<MediaFileDetails>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SeriesMetadata {
+    pub runtime_minutes: Option<u32>,
+    pub genres: Vec<String>,
+    pub network: Option<String>,
+    pub certification: Option<String>,
+    pub next_airing: Option<String>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MediaFileDetails {
+    pub quality: Option<DownloadQuality>,
+    pub size_bytes: Option<u64>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub audio_channels: Option<String>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RequestAvailability {
     Ready,
@@ -374,6 +514,8 @@ pub enum MediaItem {
         request: RequestAvailability,
         library: LibraryState,
         acquisition: Acquisition,
+        #[serde(default)]
+        metadata: Option<MovieMetadata>,
     },
     Series {
         tvdb_id: TvdbId,
@@ -385,6 +527,8 @@ pub enum MediaItem {
         library: LibraryState,
         acquisition: Acquisition,
         seasons: Vec<Season>,
+        #[serde(default)]
+        metadata: Option<SeriesMetadata>,
     },
 }
 impl MediaItem {
@@ -417,6 +561,99 @@ pub struct QueueItem {
     pub title: String,
     pub episode: Option<EpisodeNumber>,
     pub acquisition: Acquisition,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadRevision {
+    pub version: u32,
+    pub real: u32,
+    pub is_repack: bool,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadQuality {
+    pub name: String,
+    pub resolution: Option<u16>,
+    pub source: Option<String>,
+    pub modifier: Option<String>,
+    pub revision: Option<DownloadRevision>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadProgress {
+    pub completed_bytes: u64,
+    pub total_bytes: u64,
+    pub remaining_bytes: u64,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadWarning {
+    pub code: DownloadWarningCode,
+    pub severity: IssueSeverity,
+    pub message: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadDetails {
+    pub id: QueueId,
+    pub manager: ManagerId,
+    pub media: MediaIdentity,
+    pub title: String,
+    pub episode: Option<EpisodeNumber>,
+    pub acquisition: Acquisition,
+    pub status: DownloadStatus,
+    pub quality: Option<DownloadQuality>,
+    pub progress: Option<DownloadProgress>,
+    pub remaining_seconds: Option<u64>,
+    pub download_client: Option<String>,
+    pub indexer: Option<String>,
+    pub protocol: Option<DownloadProtocol>,
+    pub import_status: DownloadImportStatus,
+    pub warnings: Vec<DownloadWarning>,
+    pub languages: Vec<String>,
+    pub custom_formats: Vec<String>,
+    pub custom_format_score: Option<i32>,
+    pub added_at: Option<String>,
+    pub estimated_completion_at: Option<String>,
+    pub observed_at_unix_ms: u64,
+}
+string_enum!(ImportVerificationReason{IdentityUnavailable=>"identity_unavailable",FileEvidenceMissing=>"file_evidence_missing",NotMatched=>"not_matched",AmbiguousMatch=>"ambiguous_match",OlderVersion=>"older_version"});
+string_enum!(SubtitleUnknownReason{PlexUnverified=>"plex_unverified",StreamsUnavailable=>"streams_unavailable"});
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlexImportStatus {
+    NotConfigured,
+    Unavailable { reason: UnavailableReason },
+    Unknown { reason: ImportVerificationReason },
+    Verified { observed_at_unix_ms: u64 },
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SubtitleImportStatus {
+    Unknown {
+        reason: SubtitleUnknownReason,
+    },
+    Verified {
+        languages: Vec<String>,
+        observed_at_unix_ms: u64,
+    },
+    Missing {
+        observed_at_unix_ms: u64,
+    },
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportedItem {
+    pub id: ImportId,
+    pub manager: ManagerId,
+    pub media: MediaIdentity,
+    pub title: String,
+    pub episode: Option<EpisodeNumber>,
+    pub imported_at: String,
+    pub quality: Option<DownloadQuality>,
+    pub plex: PlexImportStatus,
+    pub subtitles: SubtitleImportStatus,
+    pub observed_at_unix_ms: u64,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]

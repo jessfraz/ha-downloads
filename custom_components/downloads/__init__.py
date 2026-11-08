@@ -11,6 +11,7 @@ from .client import DownloadsClient
 from .const import CONF_ADDON_SLUG, CONF_BACKEND_URL, CONF_TOKEN, DOMAIN
 from .coordinator import DownloadsCoordinator
 from .http import DownloadsHealthView, DownloadsView
+from .imports import async_setup_import_notifications
 from .native_health import NativeHealthCoordinator
 from .repairs import async_remove
 from .services import async_register_services
@@ -77,6 +78,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: DownloadsConfigEntry) ->
     for health in coordinators:
         entry.async_on_unload(health.async_add_listener(health.async_reconcile_repairs))
         health.async_reconcile_repairs()
+    if isinstance(entry.runtime_data, DownloadsCoordinator):
+        entry.runtime_data.import_notifications = await async_setup_import_notifications(
+            hass, entry, client
+        )
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     return True
 
