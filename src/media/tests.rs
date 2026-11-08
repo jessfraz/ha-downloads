@@ -2126,13 +2126,19 @@ async fn real_home_assistant_repairs_use_native_manager_health() {
                     && matches!(item.observation, Observation::Observed { .. })
             }) {
                 assert!(
-                    matches!(
-                        component.observation,
+                    match &component.observation {
                         Observation::Observed {
                             outcome: HealthOutcome::Healthy,
                             ..
-                        }
-                    ) == healthy,
+                        } => true,
+                        Observation::Observed {
+                            outcome: HealthOutcome::Degraded { issues },
+                            ..
+                        } => issues
+                            .iter()
+                            .all(|issue| issue.code == HealthIssueCode::UpdateAvailable),
+                        _ => false,
+                    } == healthy,
                     "only the exact routine release notice is excluded from service faults"
                 );
                 break;
@@ -2346,6 +2352,7 @@ async fn prowlarr_availability_notices_require_the_matching_home_assistant_app_u
                 panic!("expected HA app update")
             };
             assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].code, HealthIssueCode::UpdateAvailable);
             assert_eq!(
                 issues[0].message,
                 "An update is available in Home Assistant."
