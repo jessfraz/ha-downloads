@@ -3119,6 +3119,7 @@ async fn imports_since_filters_before_paging_and_plex_and_binds_validated_utc_cu
         "2026-01-02",
         "2026-01-02T01:00:00+01:00",
         "2026-02-30T00:00:00Z",
+        "2026-+1-01T00:00:00Z",
     ] {
         let response = harness
             .client

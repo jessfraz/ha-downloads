@@ -738,6 +738,13 @@ pub(crate) fn utc_instant(value: &str) -> Option<(u16, u8, u8, u8, u8, u8, u32)>
         || bytes.get(10) != Some(&b'T')
         || bytes.get(13) != Some(&b':')
         || bytes.get(16) != Some(&b':')
+        || [0..4, 5..7, 8..10, 11..13, 14..16, 17..19]
+            .into_iter()
+            .any(|field| {
+                bytes
+                    .get(field)
+                    .is_none_or(|part| !part.iter().all(u8::is_ascii_digit))
+            })
     {
         return None;
     }

@@ -941,6 +941,7 @@ fn native_imports_are_typed_paginated_reads_with_strict_since_dates() {
         "2025-02-29T00:00:00Z",
         "2026-13-01T00:00:00Z",
         "2026-01-01T00:00:00+01:00",
+        "2026-+1-01T00:00:00Z",
     ] {
         assert!(
             !native(&fixture, &["imports", "list", "--since", since])
