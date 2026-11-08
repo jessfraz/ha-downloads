@@ -86,6 +86,7 @@ The latter means the existing native selection is missing or unusable; the UI
 cannot substitute or edit it. With a configured native binding, adding a new
 title uses it automatically. An installation without a binding can proceed
 only when the native choice is unambiguous; it never guesses by ordering/name.
+New titles follow native Add defaults for availability and season folders.
 
 Library state is `{state:"not_added"}` or `{state:"managed",upstream_id:ID}`.
 No quality-profile or folder metadata is included. Acquisition is tagged by

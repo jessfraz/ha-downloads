@@ -191,11 +191,19 @@ async fn handle_native(mut stream: TcpStream, state: Arc<Mutex<NativeState>>) {
         ("GET", "/api/v3/movie") => {
             serde_json::to_vec(&guard.movie.iter().cloned().collect::<Vec<_>>()).unwrap()
         }
-        ("GET", "/api/v3/movie/lookup") => serde_json::to_vec(&vec![native_movie(0, 1)]).unwrap(),
+        ("GET", "/api/v3/movie/lookup") => {
+            let mut movie = native_movie(0, 1);
+            movie.minimum_availability = "tba".into();
+            serde_json::to_vec(&vec![movie]).unwrap()
+        }
         ("GET", "/api/v3/series") => {
             serde_json::to_vec(&guard.series.iter().cloned().collect::<Vec<_>>()).unwrap()
         }
-        ("GET", "/api/v3/series/lookup") => serde_json::to_vec(&vec![native_series(0)]).unwrap(),
+        ("GET", "/api/v3/series/lookup") => {
+            let mut series = native_series(0);
+            series.season_folder = false;
+            serde_json::to_vec(&vec![series]).unwrap()
+        }
         ("GET", "/api/v3/episode") => serde_json::to_vec(&guard.episodes).unwrap(),
         ("PUT", "/api/v3/episode/monitor") => {
             let body: ReceivedMonitoring =
@@ -697,7 +705,7 @@ async fn ambiguous_new_titles_require_parent_setup_without_receipts_or_native_wr
 }
 
 #[tokio::test]
-async fn one_native_choice_is_used_by_identity_without_assuming_first_ids() {
+async fn new_movie_uses_native_add_defaults_and_native_choice_ids() {
     let mut harness = Harness::new().await;
     {
         let mut native = harness.native.state.lock().await;
@@ -873,6 +881,10 @@ async fn new_series_uses_native_choices_and_searches_only_requested_aired_scope(
         let series = native.series.as_ref().unwrap();
         assert_eq!(series.quality_profile_id, 17);
         assert_eq!(series.root_folder_path, "/media/alternate");
+        assert!(
+            series.season_folder,
+            "new series must use Sonarr Add's season folders default"
+        );
         assert_eq!(series.monitor_new_items, "none");
         assert_eq!(native.add_count, 1);
         assert_eq!(native.monitored, vec![vec![22]]);
@@ -1560,6 +1572,12 @@ async fn series_request_monitors_and_searches_only_missing_aired_selected_episod
                 original
             );
             assert_eq!(native.add_count, 0);
+            assert!(
+                !native
+                    .calls
+                    .iter()
+                    .any(|(method, path)| method != "GET" && path == "/api/v3/series")
+            );
             assert_eq!(native.monitored, vec![vec![22]]);
             if imported_during_monitoring {
                 assert!(native.commands.is_empty());

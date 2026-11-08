@@ -156,11 +156,17 @@ impl NativeChoices {
             &media.path,
             self.defaults.movie.as_ref(),
         )?;
-        let minimum_availability = match media.minimum_availability.as_str() {
-            "announced" => MinimumAvailability::Announced,
-            "inCinemas" | "in_cinemas" => MinimumAvailability::InCinemas,
-            "released" | "" => MinimumAvailability::Released,
-            _ => return Err(ApiErrorCode::NativeSettingsRequired),
+        let minimum_availability = if media.id == 0 {
+            // Lookup's zero-valued availability is metadata, not Radarr Add's
+            // released default. Existing titles keep their native selection.
+            MinimumAvailability::Released
+        } else {
+            match media.minimum_availability.as_str() {
+                "announced" => MinimumAvailability::Announced,
+                "inCinemas" | "in_cinemas" => MinimumAvailability::InCinemas,
+                "released" | "" => MinimumAvailability::Released,
+                _ => return Err(ApiErrorCode::NativeSettingsRequired),
+            }
         };
         Ok((
             MovieSettings {
@@ -213,7 +219,9 @@ impl NativeChoices {
                     .map_err(|_| ApiErrorCode::InvalidUpstreamResponse)?,
                 tags: tags(&media.tags)?,
                 series_type,
-                season_folders: media.season_folder,
+                // Sonarr Add enables season folders; lookup's false is only
+                // the model default. Existing series retain their own choice.
+                season_folders: media.id == 0 || media.season_folder,
                 future_monitoring,
             },
             root.path.clone(),
