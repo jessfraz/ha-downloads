@@ -423,11 +423,14 @@ pub struct UpRoot {
     #[serde(default, rename = "freeSpace")]
     pub free_space: Option<u64>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct UpHealth {
     pub source: String,
     #[serde(rename = "type")]
     pub severity: String,
+    // Private input for exact release-notice recognition, never public health text.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UpStatus {

@@ -55,6 +55,32 @@ class HealthState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class IssueSeverity(StrEnum):
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class HealthIssueCode(StrEnum):
+    UPSTREAM_HEALTH = "upstream_health"
+    INDEXER_UNAVAILABLE = "indexer_unavailable"
+    DOWNLOAD_CLIENT_UNAVAILABLE = "download_client_unavailable"
+    STORAGE_UNAVAILABLE = "storage_unavailable"
+    STORAGE_LOW = "storage_low"
+    PROTECTION_UNVERIFIED = "protection_unverified"
+    CHECKS_MISSING = "checks_missing"
+    CHECKS_STALE = "checks_stale"
+    NOT_CONFIGURED = "not_configured"
+    UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+
+
+class UnavailableReason(StrEnum):
+    TIMEOUT = "timeout"
+    CONNECTION = "connection"
+    AUTHENTICATION = "authentication"
+    INVALID_RESPONSE = "invalid_response"
+    NOT_RUNNING = "not_running"
+
+
 class ErrorCode(StrEnum):
     AUTHENTICATION_REQUIRED = "authentication_required"
     INVALID_ARGUMENTS = "invalid_arguments"
@@ -229,12 +255,29 @@ class System:
 
 
 @dataclass(frozen=True, slots=True)
+class HealthIssue:
+    """Keep only closed codes; native service messages are not Repair content."""
+
+    code: HealthIssueCode
+    severity: IssueSeverity
+
+    @classmethod
+    def parse(cls, value: object) -> Self:
+        data = record(value)
+        return cls(
+            HealthIssueCode(text(data.get("code"))), IssueSeverity(text(data.get("severity")))
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentHealth:
     component: Component
     outcome: Outcome | None
     observed_at: int | None
     expires_at: int | None
     stale: bool
+    issues: tuple[HealthIssue, ...] = ()
+    unavailable_reason: UnavailableReason | None = None
 
     def state_at(self, now_ms: int) -> HealthState:
         if self.outcome is None:
@@ -254,7 +297,17 @@ class ComponentHealth:
             return cls(component, None, None, None, False)
         if observation.get("state") != "observed":
             raise ValueError("Invalid observation")
-        outcome = Outcome(text(record(observation.get("outcome")).get("state")))
+        outcome_data = record(observation.get("outcome"))
+        outcome = Outcome(text(outcome_data.get("state")))
+        issues: tuple[HealthIssue, ...] = ()
+        reason = None
+        if outcome is Outcome.DEGRADED:
+            incoming = outcome_data.get("issues")
+            if not isinstance(incoming, list) or not 1 <= len(incoming) <= 100:
+                raise ValueError("Invalid health issues")
+            issues = tuple(HealthIssue.parse(item) for item in incoming)
+        elif outcome is Outcome.UNAVAILABLE:
+            reason = UnavailableReason(text(outcome_data.get("reason")))
         freshness = observation.get("freshness")
         if freshness not in {"fresh", "stale"}:
             raise ValueError("Invalid freshness")
@@ -262,7 +315,7 @@ class ComponentHealth:
         expires = integer(observation.get("expires_at_unix_ms"))
         if expires < observed:
             raise ValueError("Invalid expiry")
-        return cls(component, outcome, observed, expires, freshness == "stale")
+        return cls(component, outcome, observed, expires, freshness == "stale", issues, reason)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,17 +1,18 @@
 [project]
 name = "downloads-home-assistant"
-version = "0.3.0"
+version = "0.3.1"
 requires-python = ">=3.14.2"
 dependencies = []
 
 [dependency-groups]
 dev = [
-  "pytest-homeassistant-custom-component==0.13.372",
+  "pytest-homeassistant==2026.11.0",
+  "aiohasupervisor==0.8.1",
   "ruff==0.17.3",
-  # Core 2026.10.1 conversation requirements, used by real Assist tool calls.
+  # Core conversation requirements, used by real Assist tool calls.
   "gazetteer-matcher==1.1.0",
   "hassil==3.12.1",
-  "home-assistant-intents==2026.10.6",
+  "home-assistant-intents==2026.10.27",
 ]
 
 [tool.uv]
@@ -21,7 +22,8 @@ package = false
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["../tests_ha"]
-addopts = "--strict-markers"
+# Core initializes httpx2 before its native HTTP mocks; the standalone plugin does not.
+addopts = "--strict-markers -p no:respx"
 
 [tool.ruff]
 target-version = "py314"

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import StrEnum
@@ -13,8 +14,9 @@ from typing import Self
 from aiohasupervisor import SupervisorError
 from aiohttp import ClientError
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.json import JsonObjectType
 
@@ -121,9 +123,71 @@ class NativeHealthCoordinator(DataUpdateCoordinator[HealthData]):
             update_interval=timedelta(seconds=10),
         )
         self.slug: str = entry.data[CONF_ADDON_SLUG]
+        self.entry = entry
+        self._cancel_expiry: Callable[[], None] | None = None
+
+    async def async_shutdown(self) -> None:
+        """Own the local expiry callback independently from entity listeners."""
+        self._async_cancel_expiry()
+        await super().async_shutdown()
+
+    @callback
+    def _async_cancel_expiry(self) -> None:
+        if self._cancel_expiry is not None:
+            self._cancel_expiry()
+            self._cancel_expiry = None
+
+    @callback
+    def _schedule_expiry(self, data: HealthData) -> None:
+        self._async_cancel_expiry()
+        age = data.projection()["age_ms"]
+        if isinstance(age, int) and age <= _MAX_AGE_MS:
+            self._cancel_expiry = async_call_later(
+                self.hass, (_MAX_AGE_MS - age + 1) / 1000, self._expired
+            )
+
+    @callback
+    def _expired(self, _now: object) -> None:
+        self._cancel_expiry = None
+        if not self._shutdown_requested and self.data is not None:
+            self.async_update_listeners()
+            self._schedule_expiry(self.data)
+
+    @callback
+    def async_reconcile_repairs(self) -> None:
+        from .repairs import async_update_protection
+
+        if not self._shutdown_requested and self.last_update_success and self.data is not None:
+            async_update_protection(self.hass, self.entry, self.data)
 
     async def _async_update_data(self) -> HealthData:
-        return await async_fetch_health(self.hass, self.slug)
+        # Local import keeps the health contract usable by the config flow.
+        from .repairs import async_report
+
+        try:
+            data = await async_fetch_health(self.hass, self.slug)
+        except AppStopped:
+            if not self._shutdown_requested:
+                async_report(self.hass, self.entry, "app", "Downloads app", ("app_stopped",))
+            raise
+        except UpdateFailed:
+            if not self._shutdown_requested:
+                async_report(
+                    self.hass,
+                    self.entry,
+                    "protection_connection",
+                    "Downloads protection",
+                    ("health_unavailable",),
+                    unknown=True,
+                )
+            raise
+        if not self._shutdown_requested:
+            self._schedule_expiry(data)
+        return data
+
+
+class AppStopped(UpdateFailed):
+    """Supervisor confirmed a stopped app, rather than an unknown network path."""
 
 
 async def async_fetch_health(hass: HomeAssistant, slug: str) -> HealthData:
@@ -133,7 +197,11 @@ async def async_fetch_health(hass: HomeAssistant, slug: str) -> HealthData:
     try:
         async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
             app = await get_supervisor_client(hass).addons.addon_info(slug)
-            if app.url != APP_URL or app.state != "started":
+            if app.url != APP_URL:
+                raise UpdateFailed("The selected app is not Downloads.")
+            if app.state == "stopped":
+                raise AppStopped("The Downloads app is stopped.")
+            if app.state != "started":
                 raise UpdateFailed("The Downloads app is not running.")
             address = ip_address(app.ip_address)
             if not address.is_private or address.is_unspecified or address.is_loopback:

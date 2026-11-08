@@ -520,6 +520,9 @@ async fn manager_health(up: &crate::media::upstream::Upstream) -> HealthOutcome 
         Ok((_, health)) => {
             let mut issues = Vec::<HealthIssue>::new();
             for h in health {
+                if routine_release_notice(&h) {
+                    continue;
+                }
                 let source = h.source.to_ascii_lowercase();
                 let code = if source.contains("indexer") {
                     HealthIssueCode::IndexerUnavailable
@@ -551,7 +554,7 @@ async fn manager_health(up: &crate::media::upstream::Upstream) -> HealthOutcome 
                         }
                         HealthIssueCode::StorageUnavailable => "Storage needs attention.",
                         HealthIssueCode::UpstreamHealth if source == "updatecheck" => {
-                            "An update is available."
+                            "The service's update check needs attention."
                         }
                         _ => "The service reported a health issue.",
                     }
@@ -571,6 +574,31 @@ async fn manager_health(up: &crate::media::upstream::Upstream) -> HealthOutcome 
             reason: UnavailableReason::Connection,
         },
     }
+}
+
+fn routine_release_notice(check: &UpHealth) -> bool {
+    if check.source != "UpdateCheck" || check.severity != "warning" {
+        return false;
+    }
+    let Some(version) = check
+        .message
+        .as_deref()
+        .and_then(|message| message.strip_prefix("New update is available: v"))
+    else {
+        return false;
+    };
+    let mut count = 0;
+    for part in version.split('.') {
+        count += 1;
+        if count > 4
+            || part.is_empty()
+            || part.len() > 6
+            || !part.bytes().all(|c| c.is_ascii_digit())
+        {
+            return false;
+        }
+    }
+    (2..=4).contains(&count)
 }
 #[derive(Deserialize)]
 struct SabResponse {

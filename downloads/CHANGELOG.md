@@ -1,3 +1,11 @@
+# 0.3.1
+
+- Report confirmed Downloads and media-service failures in native Home Assistant
+  Repairs. Keep unresolved failures through health gaps and clear them after
+  fresh recovery.
+- Keep routine release notices out of service faults while retaining failed
+  update checks.
+
 # 0.3.0
 
 Removes Downloads profile management from the sidebar, API, CLI and Assist.

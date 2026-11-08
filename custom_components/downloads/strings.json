@@ -125,5 +125,15 @@
       "name": "Read media status",
       "description": "Read a request, original idempotency key, movie, or TV status without retrying a write."
     }
+  },
+  "issues": {
+    "health_failed": {
+      "title": "{component} needs attention",
+      "description": "The last verified Downloads check reported: **{codes}**.\n\nOpen [Downloads logs]({logs_url}) and the affected service's native settings. [Downloads integration and diagnostics]({integration_url}) provides the current connection state and a diagnostic download.\n\nThis issue clears after a fresh check confirms the failure has cleared. A stale or unavailable check does not prove recovery. No settings, queues, or devices are changed by this Repair."
+    },
+    "health_unavailable": {
+      "title": "{component} cannot be verified",
+      "description": "Home Assistant cannot obtain current health evidence: **{codes}**. This does not prove that the VPN or another service has failed. Previously confirmed failures remain unresolved until a fresh check confirms recovery.\n\nCheck [Downloads logs]({logs_url}) and [the integration connection and diagnostics]({integration_url}). This issue clears when current health evidence is available again."
+    }
   }
 }
