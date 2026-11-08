@@ -1,4 +1,4 @@
-"""Backend-owned operation readiness, with target ambiguity left unknown."""
+"""Backend-owned operation readiness, with entry-owned evidence expiration."""
 
 from datetime import datetime, timedelta
 

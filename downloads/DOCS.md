@@ -19,8 +19,9 @@ validates this list and provides no arbitrary Gluetun environment overrides.
 
 ## SABnzbd and media managers
 
-Open Downloads through Home Assistant ingress, then use the SABnzbd interface
-to configure Usenet servers, credentials, categories, and queues. Enable TLS
+Open Downloads through Home Assistant ingress, then append `sabnzbd/` to that
+ingress URL to open SABnzbd itself. Configure Usenet servers, credentials,
+categories, and queues there. Enable TLS
 and certificate verification for each Usenet server. Provider
 traffic stays inside the app's VPN namespace. SABnzbd owns its own API key and
 login; Downloads does not import a provider or library automatically. The queue
@@ -57,29 +58,29 @@ health observations, not a prerequisite for every request.
 Plex's identity health check accepts a URL without an API key; a configured
 Plex token is optional and is sent only to that server.
 
-In the Downloads sidebar, create saved profiles from the manager's actual
-quality profiles, roots and tags. A request pins the selected profile revision
-and exact movie/TV identity. Selected-season requests exclude specials unless
-explicitly selected, future episodes and episodes already imported. Existing
-native quality/root settings are preserved; conflicts need a deliberate profile
-selection, not a hidden overwrite. Future monitoring is a separate saved TV
-policy, defaulting off.
+The Downloads sidebar searches, requests, and reports progress and health.
+Quality profiles, library folders and downloader settings stay in their native
+apps. Downloads keeps only private references to the configured native choices,
+resolving their actual definitions from the managers. Existing titles retain
+all native settings. Selected-season requests exclude future and imported
+episodes, and exclude specials unless explicitly selected. No Downloads UI,
+API, CLI or Assist tool edits profiles or downloader configuration.
 
-All authenticated HA users can read the sidebar. HA administrators can request
-and edit saved profiles. Add non-admin HA user IDs to
-`media.requester_user_ids` only when they should be able to request media.
-The SABnzbd browser/settings remain administrator-only.
+All authenticated HA users can read the sidebar. HA administrators can request.
+Add non-admin HA user IDs to `media.requester_user_ids` only when they should be
+able to request media. The sidebar does not embed the SABnzbd settings console;
+its native protocol remains available to configured download clients.
 
 For native CLI/API access, set independent, distinct role credentials of at
 least 32 characters: `api_token` is read-only, `media.request_token` permits
-requests, and `media.admin_token` permits saved-profile writes. The dedicated
-`media.integration_token` is only for the optional HA companion. In HA, leaving
-it blank generates a stable app-owned credential under
+requests, and `media.admin_token` also permits inspecting other actors' receipts.
+The dedicated `media.integration_token` is only for the optional HA companion.
+In HA, leaving it blank generates a stable app-owned credential under
 `/data/media/integration-token`, shared only through Supervisor discovery.
 An explicit value overrides that credential for manual/standalone pairing.
-It cannot edit profiles or access SABnzbd. Never reuse a HA token or manager key
-as a role token. Native app backups preserve the generated credential; do not
-delete private app state to repair pairing.
+It cannot access SABnzbd. Never reuse a HA token or manager key as a role token.
+Native backups preserve the credential and private request state; do not delete
+that state to repair pairing.
 
 Install the [native companion](../integration/README.md) through HACS/manual
 custom integration, then confirm discovery or pair the native app origin.

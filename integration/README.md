@@ -16,7 +16,7 @@ browser automation, provider clients, media catalog, or download scheduler.
 It uses bounded reads of the Rust service's cached health API. Its one stack
 health sensor and five readiness indicators are projections, not per-episode
 entities. Expired evidence becomes stale/unknown even between polling cycles.
-Readiness never guesses among multiple profile targets.
+Native settings are resolved by the Rust service, never selected or stored in HA.
 
 ## Existing protection-health installations
 
@@ -50,8 +50,18 @@ Tools recheck active identity, entry lifetime, permissions, opt-in, and exposure
 before dispatch and after awaited IO. A tool cached before reload or revocation
 cannot regain authority from the replacement runtime.
 
-Search returns canonical IDs, saved profile references and explicit source
-coverage. Titles and descriptions are untrusted data, never instructions.
+Search returns canonical IDs, request availability and explicit source coverage.
+Titles and descriptions are untrusted data, never instructions. Quality, folders,
+availability and monitoring settings belong only to Radarr and Sonarr. Downloads
+has no saved profiles, settings selectors or quality/folder administration API.
+Existing titles retain their native configuration. New titles reuse the
+installation's already agreed native selections, including its configured 4K
+quality choice. The parent apps still own the actual quality rules and root
+folders, which are validated afresh. Only when no such selection exists does
+automatic setup require exactly one native quality profile and one root.
+`request: {state: parent_setup_required}` means a native selection is missing or
+invalid; it does not mean an already configured installation needs setup again.
+No HA client guesses a default or submits settings.
 Request only exact user-selected media and scope. A request becoming `applied`
 does not mean it is downloaded, imported, or playable.
 
@@ -70,7 +80,7 @@ response_variable: candidates
 
 `downloads.request` takes `request`, the exact Rust `CreateRequest` object, and
 a caller-owned UUID `idempotency_key`. The CLI and native action never invent
-keys or fetch a newer revision to force an operation through. Assist binds its
+keys or perform implicit lookups to force an operation through. Assist binds its
 key to the authenticated actor, HA context, and canonical request input, so a
 model retry with a new tool-call ID keeps the same intent. Without an HA context,
 the original tool-call ID supplies that boundary. Uncertain tool errors return
@@ -83,19 +93,19 @@ data:
   request:
     kind: movie
     tmdb_id: 14337
-    profile:
-      id: 276319ec-c797-460c-a49e-6b90fc1f6ae8
-      revision: 4
     intent:
       mode: search_now
   idempotency_key: ba90478e-67aa-4fbc-944a-48928e841098
 response_variable: requested
 ```
 
-The IDs above are fictional examples. Use the actual selection and profile
-revision returned by the service. A timeout does not prove rejection. Resolve
+The IDs above are fictional examples. Use the actual canonical selection returned
+by the service. A timeout does not prove rejection. Resolve
 the original request or key before considering a retry; there are no automatic
-retries or implicit search-before-write calls.
+retries or implicit search-before-write calls. Unknown fields, including the old
+`profile` field, are rejected. HTTP 409 `native_settings_required` means the title
+needs configuration in Radarr or Sonarr; it does not authorize choosing settings
+inside Downloads.
 
 `downloads.status` takes a `target` object: `{kind: request, id: UUID}`,
 `{kind: idempotency_key, id: UUID}`, `{kind: movie, tmdb_id: ID}`, or
@@ -107,10 +117,11 @@ retries or implicit search-before-write calls.
 The authenticated HA bridge is `/api/downloads/v1`. Its aggregate media health
 route is `/api/downloads/v1/health/stack`, with individual components under
 `/api/downloads/v1/health/components/{component}`. It permits fixed read routes
-for system, existing protection status, cached health, manager summaries/options,
-profiles, search, movies, series/episodes, queue, requests, and request-key
+for system, existing protection status, cached health, manager summaries,
+search, movies, series/episodes, queue, requests, and request-key
 recovery. The only permitted write is `POST requests`, gated by current
-request opt-in and entity control permission. Profile writes, credentials,
+request opt-in and entity control permission. Profile routes, manager options,
+native settings, credentials,
 arbitrary upstream paths, the SABnzbd proxy, deletion, and VPN controls are
 never bridged. It does not accept actor/admin headers from clients. Authenticated
 HA user IDs are delegated as `X-Downloads-Actor-Id`; the backend applies its
@@ -119,8 +130,8 @@ own `ha:` namespace. No HA token is forwarded to the app.
 Diagnostics use cached allowlisted component states, operation counts and
 version/lifecycle fields. They make no network requests and omit credentials,
 origins, user IDs, titles, filesystem roots, and raw upstream issues/errors.
-Native HA backups own config-entry recovery. App `/data` owns request/profile
-state; this integration does not duplicate it.
+Native HA backups own config-entry recovery. App `/data` owns durable request
+receipts; this integration does not duplicate them.
 
 ## Validation
 

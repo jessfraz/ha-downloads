@@ -67,7 +67,7 @@
     "step": {
       "init": {
         "title": "Media request access",
-        "description": "Allow permitted HA users and automations to submit media requests. Assist also requires explicit exposure of the Downloads stack health entity. No profile administration, deletion, release overrides, or VPN controls are exposed.",
+        "description": "Allow permitted HA users and automations to submit media requests. Assist also requires explicit exposure of the Downloads stack health entity. No settings changes, deletion, release overrides, or VPN controls are exposed.",
         "data": {
           "allow_requests": "Allow media requests"
         }
@@ -115,7 +115,7 @@
   "services": {
     "search": {
       "name": "Search media",
-      "description": "Resolve titles to canonical IDs and saved profile references without requesting a download."
+      "description": "Resolve titles to canonical IDs and native request availability without requesting a download."
     },
     "request": {
       "name": "Request media",

@@ -74,21 +74,23 @@ belong in this repository.
 
 ## Durable media requests
 
-Saved profiles and actor-scoped receipts use a versioned private journal under
+Private native-object references and actor-scoped receipts use a versioned
+journal under
 `/data/media`. Writes sync a temporary file, atomically rename, then sync the
 directory before acknowledging. An invalid journal disables media features;
 it is never reset or replaced with an empty store. Native HA cold backups cover
 this state. Receipts are bounded and never silently pruned.
 
-Acceptance validates canonical identity, native profile/root/tag relationships
-and saves immutable settings before any native effect. Checkpoints precede
+Acceptance validates canonical identity and native settings, then saves an
+immutable execution plan before any native effect. Checkpoints precede
 add, episode-monitoring and search writes. Ambiguous effects are reconciled by
 canonical library/command readback, never repeated merely because a request
 timed out or the app restarted. Selected aired, missing episode IDs are frozen;
 no full-series update can overwrite unrelated native settings.
 
 Background health is cached with observation and expiry times. GET does not
-refresh evidence timestamps. Readiness is operation/profile scoped; optional
+refresh evidence timestamps. Readiness is operation scoped; per-title request
+eligibility is separate. Optional
 Plex and Prowlarr are not universal dependencies. Request readiness does not
 claim transfer or import readiness. Imports additionally need current staging
 and destination observations. The watchdog remains local and independent.

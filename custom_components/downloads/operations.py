@@ -19,16 +19,11 @@ from .models import (
     record,
     request_document,
     text,
+    validate_media_response,
 )
 
 UUID_SCHEMA = vol.All(str, vol.Match(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"))
 POSITIVE_ID_SCHEMA = vol.All(int, vol.Range(min=1, max=2**31 - 1))
-PROFILE_SCHEMA = vol.Schema(
-    {
-        vol.Required("id"): UUID_SCHEMA,
-        vol.Required("revision"): vol.All(int, vol.Range(min=1, max=2**64 - 1)),
-    }
-)
 SCOPE_SCHEMA = vol.Any(
     vol.Schema({vol.Required("kind"): vol.In(["all_aired"])}),
     vol.Schema(
@@ -45,7 +40,6 @@ REQUEST_DOCUMENT_SCHEMA = vol.Any(
         {
             vol.Required("kind"): vol.In(["movie"]),
             vol.Required("tmdb_id"): POSITIVE_ID_SCHEMA,
-            vol.Required("profile"): PROFILE_SCHEMA,
             vol.Required("intent"): vol.Schema(
                 {vol.Required("mode"): vol.In(["search_now", "monitor_only"])}
             ),
@@ -55,7 +49,6 @@ REQUEST_DOCUMENT_SCHEMA = vol.Any(
         {
             vol.Required("kind"): vol.In(["series"]),
             vol.Required("tvdb_id"): POSITIVE_ID_SCHEMA,
-            vol.Required("profile"): PROFILE_SCHEMA,
             vol.Required("intent"): vol.Any(
                 vol.Schema(
                     {
@@ -105,7 +98,7 @@ REQUEST_SCHEMA = vol.Schema(
 STATUS_SCHEMA = vol.Schema({vol.Required("target"): TARGET_SCHEMA})
 
 
-def response_document(response: BackendResponse) -> JsonObjectType:
+def response_document(response: BackendResponse, *, path: str | None = None) -> JsonObjectType:
     """Never relay raw provider errors or unrecognized error messages."""
     if not 200 <= response.status < 300:
         code = "backend_error"
@@ -115,9 +108,16 @@ def response_document(response: BackendResponse) -> JsonObjectType:
                 code = ErrorCode(value).value
         except ValueError:
             pass
-        raise AccessFailure(code, f"Downloads rejected the request (HTTP {response.status}).")
+        message = (
+            "Configure this title in Radarr or Sonarr first; native settings are required."
+            if code == ErrorCode.NATIVE_SETTINGS_REQUIRED
+            else f"Downloads rejected the request (HTTP {response.status})."
+        )
+        raise AccessFailure(code, message)
     try:
         data = response.json()
+        if path is not None:
+            validate_media_response(path, data)
     except ValueError:
         raise AccessFailure("invalid_response", "Downloads returned an invalid response.") from None
     # All success responses are service-owned JSON objects. Their nested domain
@@ -153,7 +153,7 @@ async def _call(
             "check its original idempotency key before retrying."
         ) from None
     await guard.check()
-    return response_document(response)
+    return response_document(response, path=path)
 
 
 async def async_search(guard: AccessGuard, values: dict[str, object]) -> JsonObjectType:

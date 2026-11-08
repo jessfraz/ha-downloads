@@ -220,7 +220,7 @@ string_enum!(ReadinessState{Ready=>"ready",Blocked=>"blocked"});
 string_enum!(AcquisitionBlock{ImportFailed=>"import_failed",DownloadFailed=>"download_failed",ReleaseRejected=>"release_rejected",Unknown=>"unknown"});
 string_enum!(RequestEffect{Added=>"added",AlreadyManaged=>"already_managed",AlreadySatisfied=>"already_satisfied"});
 string_enum!(ReconciliationReason{UpstreamOutcomeUnknown=>"upstream_outcome_unknown",DependencyUnavailable=>"dependency_unavailable",RestartedDuringWrite=>"restarted_during_write"});
-string_enum!(ApiErrorCode{AuthenticationRequired=>"authentication_required",InvalidArguments=>"invalid_arguments",PermissionDenied=>"permission_denied",NotFound=>"not_found",NotConfigured=>"not_configured",UpstreamUnavailable=>"upstream_unavailable",InvalidUpstreamResponse=>"invalid_upstream_response",ProfileRevisionConflict=>"profile_revision_conflict",ExistingSettingsConflict=>"existing_settings_conflict",IdempotencyConflict=>"idempotency_conflict",InvalidScope=>"invalid_scope",AmbiguousOperationTarget=>"ambiguous_operation_target",PreconditionRequired=>"precondition_required",RevisionConflict=>"revision_conflict",UnsupportedTransportOperation=>"unsupported_transport_operation"});
+string_enum!(ApiErrorCode{AuthenticationRequired=>"authentication_required",InvalidArguments=>"invalid_arguments",PermissionDenied=>"permission_denied",NotFound=>"not_found",NotConfigured=>"not_configured",NativeSettingsRequired=>"native_settings_required",UpstreamUnavailable=>"upstream_unavailable",InvalidUpstreamResponse=>"invalid_upstream_response",ExistingSettingsConflict=>"existing_settings_conflict",IdempotencyConflict=>"idempotency_conflict",InvalidScope=>"invalid_scope",PreconditionRequired=>"precondition_required",UnsupportedTransportOperation=>"unsupported_transport_operation"});
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -249,25 +249,6 @@ pub struct Page<T> {
     pub coverage: Vec<SourceCoverage>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct NamedOption {
-    pub id: u32,
-    pub name: String,
-}
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct RootFolderOption {
-    pub id: RootFolderId,
-    pub name: String,
-    pub accessible: bool,
-}
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct ManagerOptions {
-    pub manager: ManagerId,
-    pub quality_profiles: Vec<NamedOption>,
-    pub root_folders: Vec<RootFolderOption>,
-    pub tags: Vec<NamedOption>,
-    pub series_types: Vec<SeriesType>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ManagerSummary {
     pub manager: ManagerId,
     pub configured: bool,
@@ -279,35 +260,17 @@ pub struct ManagerList {
     pub items: Vec<ManagerSummary>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ProfileRef {
-    pub id: ProfileId,
-    pub revision: Revision,
-}
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct MovieProfileRef {
-    pub id: ProfileId,
-    pub revision: Revision,
-}
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct SeriesProfileRef {
-    pub id: ProfileId,
-    pub revision: Revision,
-}
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct MovieSettings {
+pub(crate) struct MovieSettings {
     pub quality_profile_id: QualityProfileId,
     pub root_folder_id: RootFolderId,
     pub tags: Vec<TagId>,
     pub minimum_availability: MinimumAvailability,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct SeriesSettings {
+pub(crate) struct SeriesSettings {
     pub quality_profile_id: QualityProfileId,
     pub root_folder_id: RootFolderId,
     pub tags: Vec<TagId>,
@@ -315,83 +278,6 @@ pub struct SeriesSettings {
     pub season_folders: bool,
     pub future_monitoring: FutureMonitoring,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ProfileInput {
-    Movie {
-        name: ProfileName,
-        is_default: bool,
-        settings: MovieSettings,
-    },
-    Series {
-        name: ProfileName,
-        is_default: bool,
-        settings: SeriesSettings,
-    },
-}
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DownloadProfile {
-    Movie {
-        id: ProfileId,
-        revision: Revision,
-        name: ProfileName,
-        is_default: bool,
-        settings: MovieSettings,
-    },
-    Series {
-        id: ProfileId,
-        revision: Revision,
-        name: ProfileName,
-        is_default: bool,
-        settings: SeriesSettings,
-    },
-}
-impl DownloadProfile {
-    pub fn id(&self) -> &ProfileId {
-        match self {
-            Self::Movie { id, .. } | Self::Series { id, .. } => id,
-        }
-    }
-    pub fn revision(&self) -> Revision {
-        match self {
-            Self::Movie { revision, .. } | Self::Series { revision, .. } => *revision,
-        }
-    }
-    pub fn kind(&self) -> MediaKind {
-        match self {
-            Self::Movie { .. } => MediaKind::Movie,
-            Self::Series { .. } => MediaKind::Series,
-        }
-    }
-    pub fn root_folder_id(&self) -> RootFolderId {
-        match self {
-            Self::Movie { settings, .. } => settings.root_folder_id,
-            Self::Series { settings, .. } => settings.root_folder_id,
-        }
-    }
-    pub fn is_default(&self) -> bool {
-        match self {
-            Self::Movie { is_default, .. } | Self::Series { is_default, .. } => *is_default,
-        }
-    }
-    pub fn set_default(&mut self, value: bool) {
-        match self {
-            Self::Movie { is_default, .. } | Self::Series { is_default, .. } => *is_default = value,
-        }
-    }
-    pub fn reference(&self) -> ProfileRef {
-        ProfileRef {
-            id: self.id().clone(),
-            revision: self.revision(),
-        }
-    }
-}
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct ProfileList {
-    pub items: Vec<DownloadProfile>,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MovieIntent {
@@ -415,28 +301,14 @@ pub enum SeriesIntent {
 pub enum CreateRequest {
     Movie {
         tmdb_id: TmdbId,
-        profile: MovieProfileRef,
         intent: MovieIntent,
     },
     Series {
         tvdb_id: TvdbId,
-        profile: SeriesProfileRef,
         intent: SeriesIntent,
     },
 }
 impl CreateRequest {
-    pub fn profile(&self) -> ProfileRef {
-        match self {
-            Self::Movie { profile, .. } => ProfileRef {
-                id: profile.id.clone(),
-                revision: profile.revision,
-            },
-            Self::Series { profile, .. } => ProfileRef {
-                id: profile.id.clone(),
-                revision: profile.revision,
-            },
-        }
-    }
     pub fn identity(&self) -> MediaIdentity {
         match self {
             Self::Movie { tmdb_id, .. } => MediaIdentity::Movie { tmdb_id: *tmdb_id },
@@ -454,11 +326,7 @@ pub enum MediaIdentity {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum LibraryState {
     NotAdded,
-    Managed {
-        upstream_id: u32,
-        quality_profile_id: QualityProfileId,
-        quality_profile_name: String,
-    },
+    Managed { upstream_id: u32 },
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -489,6 +357,12 @@ pub struct Season {
     pub state: SeasonState,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RequestAvailability {
+    Ready,
+    ParentSetupRequired,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MediaItem {
     Movie {
@@ -497,7 +371,7 @@ pub enum MediaItem {
         year: Option<u16>,
         overview: String,
         poster: Option<String>,
-        default_profile: Option<MovieProfileRef>,
+        request: RequestAvailability,
         library: LibraryState,
         acquisition: Acquisition,
     },
@@ -507,7 +381,7 @@ pub enum MediaItem {
         year: Option<u16>,
         overview: String,
         poster: Option<String>,
-        default_profile: Option<SeriesProfileRef>,
+        request: RequestAvailability,
         library: LibraryState,
         acquisition: Acquisition,
         seasons: Vec<Season>,
@@ -613,7 +487,6 @@ pub struct ComponentHealth {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct OperationReadiness {
     pub operation: Operation,
-    pub profile_id: Option<ProfileId>,
     pub state: ReadinessState,
     pub reasons: Vec<HealthIssueCode>,
     pub expires_at_unix_ms: u64,
@@ -630,7 +503,7 @@ mod tests {
     use crate::media::model::{CreateRequest, SeasonSet, TmdbId};
     #[test]
     fn request_decoder_rejects_cross_kind_scope_and_unknown_fields() {
-        let valid = r#"{"kind":"movie","tmdb_id":14337,"profile":{"id":"276319ec-c797-460c-a49e-6b90fc1f6ae8","revision":1},"intent":{"mode":"search_now"}}"#;
+        let valid = r#"{"kind":"movie","tmdb_id":14337,"intent":{"mode":"search_now"}}"#;
         assert!(serde_json::from_str::<CreateRequest>(valid).is_ok());
         assert!(
             serde_json::from_str::<CreateRequest>(
@@ -647,7 +520,7 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<CreateRequest>(
-                &valid.replace("\"revision\":1", "\"revision\":0")
+                &valid.replace("\"intent\":", "\"profile\":{},\"intent\":")
             )
             .is_err()
         );

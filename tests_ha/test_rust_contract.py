@@ -47,7 +47,6 @@ async def test_real_rust_contract(
     request = {
         "kind": "movie",
         "tmdb_id": 14337,
-        "profile": {"id": os.environ["DOWNLOADS_INTEROP_PROFILE"], "revision": 1},
         "intent": {"mode": "search_now"},
     }
     response = await client.post(
@@ -65,5 +64,5 @@ async def test_real_rust_contract(
     assert replay.status == 202
     assert (await replay.json())["id"] == receipt["id"]
     denied = await client.post("/api/downloads/v1/profiles", json={})
-    assert denied.status == 405
+    assert denied.status == 404
     assert await hass.config_entries.async_unload(entry.entry_id)

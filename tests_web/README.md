@@ -2,7 +2,7 @@
 
 The panel ships plain HTML, CSS, and JavaScript without runtime dependencies.
 The tests run the shipped assets in Chromium at a nested Home Assistant ingress
-path. A local Python fixture serves the assets and a native downloader page;
+path. A local Python fixture serves the assets at the ingress path;
 bounded HTTP fixtures exercise the owned media contract without VPN credentials,
 provider accounts, or live downloads. Synthetic titles exist only in tests.
 
@@ -15,16 +15,17 @@ node --test tests_web/panel.mjs tests_web/media.mjs
 `SCREENSHOT_DIR` writes synthetic browser screenshots outside the source tree.
 Tests never launch the user's browser or modify Home Assistant settings.
 
-`panel.mjs` covers existing connection setup, separate protection proofs, paused
-queues, loss/recovery, malformed responses, ingress URLs, request timeouts,
+`panel.mjs` covers existing connection setup, separate protection proofs, read-only paused-queue status, loss/recovery, malformed responses, ingress URLs, request timeouts,
 polling lifecycle, keyboard access, responsive layouts, and native HA themes.
 
-`media.mjs` covers movie requests using saved profiles, explicit TV season scope,
-partial search coverage, unavailable queue sources, profile-conflict review,
+`media.mjs` covers movie requests using parent-app settings, explicit TV season scope,
+partial search coverage, unavailable queue sources, per-title native-owner eligibility and setup guidance,
 uncertain writes and late acceptance, same-key retry across reload, local artwork,
 mobile detail navigation, origin/focus restoration, source-row freshness, blocked
 readiness explanations, monotonic expiry under wall-clock skew and cached
-evidence, lifecycle-interrupted writes, and administrator profile setup.
+evidence, lifecycle-interrupted writes, and safe server-owned health warning messages. Healthy prerequisites never
+override a title that requires setup in Radarr or Sonarr. The sidebar never loads profile
+or manager-options endpoints and never embeds downloader controls.
 
 A request-key lookup returning 404 after a lost submission response does not
 prove the original handler cannot accept later. The UI retains the original

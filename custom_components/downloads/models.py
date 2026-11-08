@@ -63,13 +63,11 @@ class ErrorCode(StrEnum):
     NOT_CONFIGURED = "not_configured"
     UPSTREAM_UNAVAILABLE = "upstream_unavailable"
     INVALID_UPSTREAM_RESPONSE = "invalid_upstream_response"
-    PROFILE_REVISION_CONFLICT = "profile_revision_conflict"
+    NATIVE_SETTINGS_REQUIRED = "native_settings_required"
     EXISTING_SETTINGS_CONFLICT = "existing_settings_conflict"
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
     INVALID_SCOPE = "invalid_scope"
-    AMBIGUOUS_OPERATION_TARGET = "ambiguous_operation_target"
     PRECONDITION_REQUIRED = "precondition_required"
-    REVISION_CONFLICT = "revision_conflict"
     UNSUPPORTED_TRANSPORT_OPERATION = "unsupported_transport_operation"
 
 
@@ -122,11 +120,8 @@ def request_document(value: object) -> JsonObjectType:
     body = record(value)
     kind = MediaKind(text(body.get("kind")))
     id_field = "tmdb_id" if kind is MediaKind.MOVIE else "tvdb_id"
-    exact(body, {"kind", id_field, "profile", "intent"})
+    exact(body, {"kind", id_field, "intent"})
     media_id = integer(body[id_field], minimum=1, maximum=2**31 - 1)
-    profile = exact(body["profile"], {"id", "revision"})
-    profile_id = identity(profile["id"])
-    revision = integer(profile["revision"], minimum=1)
     incoming_intent = record(body["intent"])
     mode = text(incoming_intent.get("mode"))
     intent: JsonObjectType
@@ -159,9 +154,54 @@ def request_document(value: object) -> JsonObjectType:
     return {
         "kind": kind.value,
         id_field: media_id,
-        "profile": {"id": profile_id, "revision": revision},
         "intent": intent,
     }
+
+
+class RequestAvailability(StrEnum):
+    READY = "ready"
+    PARENT_SETUP_REQUIRED = "parent_setup_required"
+
+    @classmethod
+    def parse(cls, value: object) -> Self:
+        data = exact(value, {"state"})
+        return cls(text(data["state"]))
+
+
+def validate_media_item(value: object) -> None:
+    """Check the owned media boundary without exposing native configuration."""
+    data = record(value)
+    kind = MediaKind(text(data.get("kind")))
+    fields = {"kind", "title", "year", "overview", "poster", "request", "library", "acquisition"}
+    id_field = "tmdb_id" if kind is MediaKind.MOVIE else "tvdb_id"
+    fields.add(id_field)
+    if kind is MediaKind.SERIES:
+        fields.add("seasons")
+    exact(data, fields)
+    integer(data[id_field], minimum=1, maximum=2**31 - 1)
+    RequestAvailability.parse(data["request"])
+    library = record(data["library"])
+    if library.get("state") == "not_added":
+        exact(library, {"state"})
+    elif library.get("state") == "managed":
+        exact(library, {"state", "upstream_id"})
+        integer(library["upstream_id"], minimum=1, maximum=2**32 - 1)
+    else:
+        raise ValueError("Invalid library state")
+
+
+def validate_media_response(path: str, value: object) -> None:
+    """The bridge and tools share the same public media contract."""
+    route = path.split("?", 1)[0]
+    if route in {"search", "movies", "series"}:
+        data = record(value)
+        items = data.get("items")
+        if not isinstance(items, list) or len(items) > 100:
+            raise ValueError("Invalid media page")
+        for item in items:
+            validate_media_item(item)
+    elif len(parts := route.split("/")) == 2 and parts[0] in {"movies", "series"}:
+        validate_media_item(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,20 +268,17 @@ class ComponentHealth:
 @dataclass(frozen=True, slots=True)
 class Readiness:
     operation: Operation
-    profile_id: str | None
     ready: bool
     expires_at: int
 
     @classmethod
     def parse(cls, value: object) -> Self:
-        data = record(value)
+        data = exact(value, {"operation", "state", "reasons", "expires_at_unix_ms"})
         state = data.get("state")
         if state not in {"ready", "blocked"}:
             raise ValueError("Invalid readiness")
-        profile_id = data.get("profile_id")
         return cls(
             Operation(text(data.get("operation"))),
-            None if profile_id is None else identity(profile_id),
             state == "ready",
             integer(data.get("expires_at_unix_ms")),
         )
@@ -259,15 +296,13 @@ class HealthSnapshot:
         components, readiness = data.get("components"), data.get("readiness")
         if not isinstance(components, list) or len(components) > len(Component):
             raise ValueError("Invalid health components")
-        if not isinstance(readiness, list) or len(readiness) > 500:
+        if not isinstance(readiness, list) or len(readiness) > len(Operation):
             raise ValueError("Invalid operation readiness")
         parsed_components = tuple(ComponentHealth.parse(item) for item in components)
         if len({item.component for item in parsed_components}) != len(parsed_components):
             raise ValueError("Duplicate component")
         parsed_readiness = tuple(Readiness.parse(item) for item in readiness)
-        if len({(item.operation, item.profile_id) for item in parsed_readiness}) != len(
-            parsed_readiness
-        ):
+        if len({item.operation for item in parsed_readiness}) != len(parsed_readiness):
             raise ValueError("Duplicate operation readiness")
         return cls(
             parsed_components,
@@ -276,7 +311,7 @@ class HealthSnapshot:
         )
 
     def ready_at(self, operation: Operation, now_ms: int) -> bool | None:
-        """Never guess a profile target or retain expired success."""
+        """Expire backend decisions without choosing native settings in HA."""
         matches = [item for item in self.readiness if item.operation is operation]
         if now_ms < self.generated_at or len(matches) != 1 or matches[0].expires_at <= now_ms:
             return None

@@ -5,6 +5,7 @@ pub mod discovery;
 mod health;
 pub mod http;
 pub mod model;
+mod native;
 mod requests;
 pub mod service;
 pub mod store;

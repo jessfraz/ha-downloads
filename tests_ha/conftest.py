@@ -30,14 +30,35 @@ from custom_components.downloads.const import (
 )
 from custom_components.downloads.models import Component
 
-PROFILE_ID = "276319ec-c797-460c-a49e-6b90fc1f6ae8"
 REQUEST_ID = "2db98f62-f0f0-4c4b-b79b-a36eb2f90810"
 KEY = "ba90478e-67aa-4fbc-944a-48928e841098"
 MOVIE_REQUEST = {
     "kind": "movie",
     "tmdb_id": 14337,
-    "profile": {"id": PROFILE_ID, "revision": 4},
     "intent": {"mode": "search_now"},
+}
+MOVIE_ITEM = {
+    "kind": "movie",
+    "tmdb_id": 14337,
+    "title": "Example title",
+    "year": 2004,
+    "overview": "A fictional fixture.",
+    "poster": None,
+    "request": {"state": "ready"},
+    "library": {"state": "not_added"},
+    "acquisition": {"state": "not_requested"},
+}
+SERIES_ITEM = {
+    "kind": "series",
+    "tvdb_id": 10,
+    "title": "Example series",
+    "year": 2005,
+    "overview": "A fictional fixture.",
+    "poster": None,
+    "request": {"state": "ready"},
+    "library": {"state": "not_added"},
+    "seasons": [],
+    "acquisition": {"state": "not_requested"},
 }
 
 
@@ -60,7 +81,6 @@ def health(*, lifetime_ms: int = 30000) -> dict[str, object]:
         "readiness": [
             {
                 "operation": "request_movie",
-                "profile_id": PROFILE_ID,
                 "state": "ready",
                 "reasons": [],
                 "expires_at_unix_ms": now + lifetime_ms,
@@ -129,14 +149,7 @@ class Backend:
         if request.path == "/api/v1/search":
             return web.json_response(
                 {
-                    "items": [
-                        {
-                            "kind": "movie",
-                            "tmdb_id": 14337,
-                            "title": "Example title",
-                            "default_profile": {"id": PROFILE_ID, "revision": 4},
-                        }
-                    ],
+                    "items": [MOVIE_ITEM],
                     "next_page": None,
                     "coverage": [
                         {
@@ -157,6 +170,8 @@ class Backend:
                 },
                 status=202,
             )
+        if request.path == "/api/v1/movies/14337":
+            return web.json_response(MOVIE_ITEM)
         return web.json_response(
             {
                 "id": REQUEST_ID,

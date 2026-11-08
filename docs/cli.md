@@ -63,11 +63,41 @@ ha-downloads --transport native system
 fetch-home-assistant -- ha-downloads --transport home-assistant health
 ```
 
-The native credential determines read/request/admin capabilities. `system`
-reports those capabilities and its `credential_role`; the client does not
-preflight credentials or invent delegated actor headers. Profile writes are
-native-only and still require the server's administrator credential. HA derives
-its own user context and checks permissions in the companion integration.
+The native credential determines capabilities. `system` reports those and its
+`credential_role`; the client does not preflight credentials or invent
+delegated actor headers. HA derives its own user context and checks permissions
+in the companion integration.
+
+## Settings ownership
+
+Radarr and Sonarr own quality profiles, library locations, tags, and defaults.
+Configure those in their native interfaces. Downloads does not maintain saved
+download profiles or provide a second settings editor. The server resolves
+effective settings from the parent manager when handling a request; request
+JSON cannot override them. Advanced queue, server, and download settings remain
+in SABnzbd's native interface.
+
+Already-managed titles use their actual saved native settings. Previously
+selected native quality/root IDs are retained privately so configured choices,
+including 4K, continue automatically. Only those foreign references are stored:
+current quality rules, paths, and other settings remain owned by and read from
+Radarr/Sonarr. There is no separate settings object or public selector.
+
+Radarr and Sonarr do not expose universal default quality/root choices through
+their API; browser-local choices are not server defaults. Only when no private
+binding exists does adding a new title require exactly one native quality
+profile and one root folder. Otherwise, configure the selection in the parent
+app first. This ambiguity safeguard is not a per-title setup step for an already
+configured installation. No popularity or first-item heuristic is used, and
+the CLI has no quality or root-folder selection arguments.
+
+Search/detail items retain this distinction in `request`: either
+`{"state":"ready"}` or `{"state":"parent_setup_required"}`. The media kind
+identifies its parent manager. This is separate from acquisition state and does
+not hide the search result or misreport a download-protection failure.
+
+Managed-library status contains only its state and native `upstream_id`, not
+quality-profile names/IDs or folder-selection metadata.
 
 ## Commands
 
@@ -77,14 +107,9 @@ its own user context and checks permissions in the companion integration.
 | `status` / `doctor` | Published read-only status report and readiness exit behavior |
 | `health` | Complete health/readiness snapshot |
 | `health component COMPONENT` | One component observation |
-| `health check --operation OP [--profile-id UUID]` | Scoped readiness snapshot and readiness exit code |
+| `health check --operation OP` | Operation readiness snapshot and readiness exit code |
 | `search QUERY [--kind all\|movie\|series]` | One search page |
 | `managers list` | Configured media managers |
-| `managers options radarr\|sonarr` | Current profiles, safe root labels, tags, series types |
-| `profiles list [--kind movie\|series]` | Saved profiles |
-| `profiles get UUID` | Profile with its exact ETag |
-| `profiles create --input FILE --idempotency-key KEY` | Native administrator profile creation |
-| `profiles replace UUID --input FILE --if-match '"7"'` | Native administrator optimistic replacement |
 | `movies list` / `movies get TMDB_ID` | Movie library page/detail |
 | `series list` / `series get TVDB_ID` | Series library page/detail |
 | `series episodes TVDB_ID [--season N]` | Episode page |
@@ -100,20 +125,20 @@ server as data, not interpreted as a URL.
 
 Health component names are `radarr`, `sonarr`, `prowlarr`, `sabnzbd`, `vpn`,
 `firewall`, `dns`, `storage`, and `plex`. Operations are `request_movie`,
-`request_series`, `transfer`, `import_movie`, and `import_series`. Profile-scoped
-operations need an unambiguous server-resolved target. The server owns the
-dependency policy; optional Plex/Prowlarr are not blanket prerequisites. A
-readiness check requires exactly one matching, unexpired server verdict.
+`request_series`, `transfer`, `import_movie`, and `import_series`. The server
+owns dependency policy and native-manager settings resolution; optional
+Plex/Prowlarr are not blanket prerequisites. A readiness check requires exactly
+one matching, unexpired server verdict. There is no public profile target.
 Aggregate `health` and `health check` use `/health/stack`; component reads use
 `/health/components/COMPONENT`. The legacy native `/health` route is unchanged.
 
 ## Requesting
 
 `--input` defaults to `-` for stdin. Inputs use the server's strict Rust request
-models: unknown fields, wrong media IDs, invalid scopes, and invalid revisions
-are rejected before an HTTP write. Input is limited to 1 MiB. Profile create and
-replace accept `ProfileInput`; request creation accepts exactly `CreateRequest`.
-See the [media contract](media-contract.md) for all shapes.
+models: unknown fields, wrong media IDs, and invalid scopes are rejected before
+an HTTP write. Input is limited to 1 MiB. Request creation accepts exactly
+`CreateRequest`, without a profile ID, revision, or settings fields. See the
+[media contract](media-contract.md) for all shapes.
 
 For example, a movie request file contains:
 
@@ -121,28 +146,24 @@ For example, a movie request file contains:
 {
   "kind": "movie",
   "tmdb_id": 14337,
-  "profile": {
-    "id": "276319ec-c797-460c-a49e-6b90fc1f6ae8",
-    "revision": 7
-  },
   "intent": {"mode": "search_now"}
 }
 ```
 
-Use the actual profile ID/revision returned by this installation:
+Submit with a stable caller-owned key:
 
 ```sh
 ha-downloads requests create --input request.json \
-  --idempotency-key movie-request-001
-ha-downloads requests lookup --idempotency-key movie-request-001
+  --idempotency-key 276319ec-c797-460c-a49e-6b90fc1f6ae8
+ha-downloads requests lookup \
+  --idempotency-key 276319ec-c797-460c-a49e-6b90fc1f6ae8
 ```
 
-Keys are caller-owned, stable, and 1..128 ASCII letters, digits, hyphens, or
-underscores. The CLI never generates or replaces them. Preserve the original
-key/body after an uncertain response, then use `lookup` or explicitly replay the
-same body/key. No retry, lookup, profile refresh, or second write is automatic.
-Profile replacement sends the exact strong `--if-match` supplied by the caller,
-including its quotes. A conflict never fetches a newer revision and retries.
+HA requires a UUID key. The native API also accepts its existing 1..128 ASCII
+letters, digits, hyphens, or underscores. The CLI never generates or replaces
+caller keys. Preserve the original key/body after an uncertain response, then
+use `lookup` or explicitly replay the same body/key. No retry, lookup, settings
+refresh, or second write is automatic.
 
 An accepted/applied request is not proof that media finished downloading or
 importing. Inspect the request and acquisition state for the actual outcome.
