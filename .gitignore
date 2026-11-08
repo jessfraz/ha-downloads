@@ -1,6 +1,8 @@
 /target/
 /.venv/
 /integration/.venv/
+/integration/.ruff_cache/
+/integration/.pytest_cache/
 /.direnv/
 /.ruff_cache/
 /.pytest_cache/

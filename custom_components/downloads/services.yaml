@@ -1,0 +1,34 @@
+search:
+  fields:
+    query:
+      required: true
+      selector:
+        text:
+    kind:
+      default: all
+      selector:
+        select:
+          options: [all, movie, series]
+    limit:
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 20
+          mode: box
+request:
+  fields:
+    request:
+      required: true
+      selector:
+        object:
+    idempotency_key:
+      required: true
+      selector:
+        text:
+status:
+  fields:
+    target:
+      required: true
+      selector:
+        object:

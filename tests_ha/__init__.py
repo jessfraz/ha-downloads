@@ -1,1 +1,1 @@
-"""Native Home Assistant adapter tests."""
+"""Native Home Assistant contract tests for Downloads."""

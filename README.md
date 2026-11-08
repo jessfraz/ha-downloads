@@ -1,12 +1,14 @@
 # Downloads
 
-SABnzbd downloads through a Gluetun VPN, with connection status and the SABnzbd
-interface in Home Assistant's sidebar. The downloader waits for the VPN,
+Search movies and TV, request exact seasons with saved Radarr/Sonarr settings,
+and follow acquisition and stack health in Home Assistant's Downloads sidebar.
+SABnzbd downloads through a Gluetun VPN. The downloader waits for the VPN,
 firewall, and DNS checks to pass. SABnzbd's **Start paused** setting controls the
 queue after an app restart; its default allows downloads to resume automatically.
 
 The app uses NET_ADMIN, NET_RAW and `/dev/net/tun`. It does not use host networking,
-the Docker socket, Home Assistant's API, or Supervisor management APIs. Media
+the Docker socket, Home Assistant's API, or Supervisor management APIs. Scoped
+Supervisor discovery pairs the optional HA companion. Media
 is available under `/media`; private options and SABnzbd state live in `/data`.
 
 ## Install
@@ -25,6 +27,25 @@ failure behavior before relying on a deployment.
 
 See [app documentation](downloads/DOCS.md) for options, storage, and connecting
 media managers. No indexer, Usenet account, or VPN subscription is included.
+
+## Media, Assist and CLI
+
+Configure manager origins and keys in the masked `media` app settings, then
+create saved movie/TV profiles in Downloads. Requests pin a profile revision;
+existing native quality/root settings are never silently overwritten. A lost
+acknowledgement is recovered by its original request/key, not a duplicate write.
+Accepted and applied requests are distinct from downloaded/imported media.
+
+The optional [native HA companion](integration/README.md) adds cached health and
+readiness entities, actions, scoped Assist tools and an authenticated HA bridge.
+Media requests default off; Assist also requires explicit entity exposure.
+The sidebar remains the app UI, with the existing shared header/footer.
+
+[`ha-downloads`](docs/cli.md) provides native and HA transports with the same
+typed contract, explicit idempotency and JSON output. The daemon keeps its
+existing `downloads serve`, `doctor` and `openapi` commands.
+See the [complete API contract](docs/media-contract.md), including existing
+status, watchdog and SABnzbd endpoints.
 
 ## Diagnostics
 
@@ -54,7 +75,7 @@ output is never forwarded: proxy logs can contain credentials unknown to this
 app. See [diagnostic behavior](downloads/DOCS.md#diagnostics) for retention and
 failure details.
 
-## Read-only CLI
+## CLI and compatible status
 
 `ha-downloads` is available from this repository's default Nix package. Help
 works offline. Use the existing Home Assistant credential wrapper for HA access:
@@ -88,7 +109,9 @@ Status output is typed JSON. Exit 0 means ready, 2 means health is not ready
 (including stale checks), and 1 means the request could not be completed. Errors
 are redacted JSON on stderr, with a fixed code and optional HTTP status. Only the
 `downloads serve` command starts app services, within its existing private Linux
-container boundary; the `ha-downloads` client has no serve or control command.
+container boundary. The `ha-downloads` client has no `serve` command; media
+requests and profile management use the explicit commands in the
+[CLI contract](docs/cli.md).
 
 ## Develop
 

@@ -79,12 +79,14 @@ docker run --rm --interactive --network none --cap-drop ALL --entrypoint /bin/sh
     --mount "type=volume,source=$volume,target=/data" "$image" \
     -ec 'umask 077; cat > /data/options.json' < "$scratch/options.json"
 docker run --detach --name "$container" --cap-drop ALL \
+    --env SUPERVISOR_TOKEN=fixture-supervisor-token \
     --mount "type=volume,source=$volume,target=/data" \
     --publish 127.0.0.1::8080 "$image" >/dev/null
 address="http://$(docker port "$container" 8080/tcp)"
-python3 - "$address" "$scratch/options.json" <<'PY'
+python3 - "$address" "$scratch/options.json" "$container" <<'PY'
 import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 import urllib.error
@@ -113,6 +115,69 @@ except urllib.error.HTTPError as error:
     assert error.code == 401
 else:
     raise AssertionError("Direct status accepted an unauthenticated client")
+
+container = sys.argv[3]
+credential_path = "/data/media/integration-token"
+integration = subprocess.check_output(
+    ["docker", "exec", container, "cat", credential_path], text=True
+).strip()
+assert len(integration) == 64 and all(c in "0123456789abcdef" for c in integration)
+assert subprocess.check_output(
+    ["docker", "exec", container, "stat", "-c", "%a:%u", credential_path], text=True
+).strip() == "600:0"
+assert subprocess.check_output(
+    ["docker", "exec", container, "stat", "-c", "%a:%u", "/data/media"], text=True
+).strip() == "700:0"
+
+def integration_system():
+    request = urllib.request.Request(
+        address + "/api/v1/system", headers={"Authorization": "Bearer " + integration}
+    )
+    with opener.open(request, timeout=2) as response:
+        system = json.load(response)
+    assert system["credential_role"] == "integration"
+    assert system["capabilities"] == {"read": True, "request": False, "admin": False}
+
+integration_system()
+request = urllib.request.Request(
+    address + "/api/v1/profiles",
+    data=json.dumps({"kind": "movie", "name": "Fixture", "is_default": True,
+                     "settings": {"quality_profile_id": 1, "root_folder_id": 1,
+                                  "tags": [], "minimum_availability": "released"}}).encode(),
+    headers={"Authorization": "Bearer " + integration,
+             "X-Downloads-Actor-Id": "smoke", "X-Downloads-Actor-Can-Request": "true",
+             "Content-Type": "application/json", "Idempotency-Key": "smoke-profile"},
+    method="POST",
+)
+try:
+    opener.open(request, timeout=2)
+except urllib.error.HTTPError as error:
+    assert error.code == 403
+else:
+    raise AssertionError("Generated integration credential gained administration")
+
+subprocess.check_output(["docker", "stop", "--time", "15", container])
+assert subprocess.check_output(
+    ["docker", "inspect", container, "--format", "{{.State.ExitCode}}"], text=True
+).strip() == "0"
+subprocess.check_output(["docker", "start", container])
+address = "http://" + subprocess.check_output(
+    ["docker", "port", container, "8080/tcp"], text=True
+).strip()
+deadline = time.monotonic() + 30
+while True:
+    try:
+        integration_system()
+        break
+    except (OSError, urllib.error.URLError):
+        if time.monotonic() >= deadline:
+            raise
+        time.sleep(0.25)
+assert subprocess.check_output(
+    ["docker", "exec", container, "cat", credential_path], text=True
+).strip() == integration, "App restart replaced its pairing credential"
+logs = subprocess.check_output(["docker", "logs", container], stderr=subprocess.STDOUT, text=True)
+assert integration not in logs, "Generated pairing credential escaped into logs"
 PY
 docker exec "$container" wget --quiet --output-document=/dev/null http://127.0.0.1:8099/healthz
 docker exec "$container" /bin/sh -ec '! ps | grep -E "[g]luetun-entrypoint|[S]ABnzbd.py"'
@@ -128,4 +193,4 @@ root = Path(sys.argv[1])
 token = json.loads((root / "options.json").read_text())["api_token"]
 assert token not in (root / "logs").read_text(), "API token escaped into container logs"
 PY
-echo "Container smoke passed ($expected_arch): packaged binaries, upstream Python imports, missing-config boundary, API authentication and graceful stop."
+echo "Container smoke passed ($expected_arch): packaged binaries, upstream Python imports, private pairing and restart, API authentication and graceful stop."

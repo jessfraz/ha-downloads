@@ -100,21 +100,67 @@ async fn serve(args: Serve) -> Result<ExitCode> {
         .and_then(|c| api::Context::token_hash(&c.api_token));
     let (tx, rx) = watch::channel(initial);
     let (stop_tx, stop_rx) = watch::channel(false);
+    let media_config = config
+        .as_ref()
+        .filter(|config| config.media.validate(&config.api_token).is_ok())
+        .map(|config| config.media.clone())
+        .unwrap_or_default();
+    if [
+        &media_config.radarr,
+        &media_config.sonarr,
+        &media_config.prowlarr,
+        &media_config.plex,
+    ]
+    .iter()
+    .any(|connection| !connection.url.is_empty())
+    {
+        anyhow::ensure!(
+            cfg!(target_os = "linux") && std::process::id() == 1,
+            "Configured media service execution requires the private Linux app container."
+        );
+    }
+    let media_directory = args
+        .config
+        .parent()
+        .context("App options need a parent directory.")?
+        .join("media");
+    let media = match ha_downloads::media::service::MediaService::open(
+        media_config.clone(),
+        media_directory,
+        rx.clone(),
+        config
+            .as_ref()
+            .map_or_else(Vec::new, |config| config.network.local_subnets.clone()),
+    )
+    .await
+    {
+        Ok(media) => Some(media),
+        Err(_) => {
+            eprintln!(
+                "Media journal is unavailable. Restore its private state before requesting media."
+            );
+            None
+        }
+    };
+    let with_media = |context: api::Context| match &media {
+        Some(media) => context.with_media(media.clone()),
+        None => context,
+    };
     let ingress = api::start(
         args.ingress_listen,
-        Arc::new(api::Context::new(
+        Arc::new(with_media(api::Context::new(
             Access::Ingress {
                 peer: args.ingress_peer,
             },
             rx.clone(),
-        )?),
+        )?)),
     )?;
     let direct = match api::start(
         args.api_listen,
-        Arc::new(api::Context::new(
+        Arc::new(with_media(api::Context::new(
             Access::Direct { token_hash },
             rx.clone(),
-        )?),
+        )?)),
     ) {
         Ok(server) => server,
         Err(error) => {
@@ -123,6 +169,13 @@ async fn serve(args: Serve) -> Result<ExitCode> {
         }
     };
     let mut status_rx = rx.clone();
+    let media_task = media
+        .clone()
+        .map(|media| tokio::spawn(media.run(stop_rx.clone())));
+    let discovery_task = tokio::spawn(ha_downloads::media::discovery::run(
+        media_config.integration_token,
+        stop_rx.clone(),
+    ));
     let writer = tokio::spawn(async move {
         loop {
             let snapshot = status_rx.borrow_and_update().clone();
@@ -167,7 +220,14 @@ async fn serve(args: Serve) -> Result<ExitCode> {
     } else {
         shutdown_signal().await?;
     }
+    if let Some(media) = &media {
+        media.stop_accepting();
+    }
     let _ = stop_tx.send(true);
+    if let Some(task) = media_task {
+        task.await.context("Cannot join media service.")?;
+    }
+    discovery_task.await.context("Cannot join app discovery.")?;
     if let Some(task) = runtime {
         task.await.context("Cannot join protection service.")??;
     }

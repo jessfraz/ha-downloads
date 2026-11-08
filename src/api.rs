@@ -23,7 +23,8 @@ pub enum Access {
     Direct { token_hash: Option<[u8; 32]> },
 }
 pub struct Context {
-    access: Access,
+    pub(crate) access: Access,
+    pub(crate) media: Option<Arc<crate::media::service::MediaService>>,
     status: watch::Receiver<Status>,
     client: reqwest::Client,
     input: Regex,
@@ -34,6 +35,7 @@ impl Context {
     pub fn new(access: Access, status: watch::Receiver<Status>) -> anyhow::Result<Self> {
         Ok(Self {
             access,
+            media: None,
             status,
             client: reqwest::Client::builder()
                 .no_proxy()
@@ -47,6 +49,10 @@ impl Context {
     }
     pub fn token_hash(token: &str) -> Option<[u8; 32]> {
         (!token.is_empty()).then(|| Sha256::digest(token.as_bytes()).into())
+    }
+    pub fn with_media(mut self, media: Arc<crate::media::service::MediaService>) -> Self {
+        self.media = Some(media);
+        self
     }
 }
 fn denied(code: ClientErrorStatusCode, message: &str) -> HttpError {
@@ -82,7 +88,22 @@ fn ingress(r: &RequestContext<Arc<Context>>) -> Result<(), HttpError> {
     }
     Ok(())
 }
+fn web_access(r: &RequestContext<Arc<Context>>) -> Result<(), HttpError> {
+    if r.context().media.is_some() {
+        if !matches!(r.context().access, Access::Ingress { .. }) {
+            return Err(forbidden());
+        }
+        crate::media::http::authorize(r, false, false, false)?;
+        Ok(())
+    } else {
+        ingress(r)
+    }
+}
 fn authenticate(r: &RequestContext<Arc<Context>>) -> Result<(), HttpError> {
+    if r.context().media.is_some() {
+        crate::media::http::authorize(r, false, false, false)?;
+        return Ok(());
+    }
     match &r.context().access {
         Access::Ingress { .. } => ingress(r),
         Access::Direct { token_hash } => {
@@ -103,7 +124,7 @@ fn authenticate(r: &RequestContext<Arc<Context>>) -> Result<(), HttpError> {
         }
     }
 }
-fn prefix(r: &RequestContext<Arc<Context>>) -> Result<String, HttpError> {
+pub(crate) fn prefix(r: &RequestContext<Arc<Context>>) -> Result<String, HttpError> {
     let value = r
         .request
         .headers()
@@ -165,7 +186,7 @@ async fn readiness(
 }
 #[endpoint {method=GET,path="/",tags=["web"]}]
 async fn index(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
-    ingress(&r)?;
+    web_access(&r)?;
     let base = format!("{}/", prefix(&r)?);
     content(
         include_str!("../web/index.html").replace("__DOWNLOADS_BASE__", &base),
@@ -185,7 +206,7 @@ struct Resource {
 }
 #[endpoint {method=GET,path="/app.js",tags=["web"]}]
 async fn javascript(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
-    ingress(&r)?;
+    web_access(&r)?;
     content(
         include_str!("../web/app.js").into(),
         "text/javascript; charset=utf-8",
@@ -193,7 +214,7 @@ async fn javascript(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, H
 }
 #[endpoint {method=GET,path="/style.css",tags=["web"]}]
 async fn stylesheet(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
-    ingress(&r)?;
+    web_access(&r)?;
     content(
         include_str!("../web/style.css").into(),
         "text/css; charset=utf-8",
@@ -475,6 +496,7 @@ pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     api.register(post)?;
     api.register(put)?;
     api.register(delete)?;
+    crate::media::http::register(&mut api)?;
     Ok(api)
 }
 pub fn start(bind: SocketAddr, context: Arc<Context>) -> anyhow::Result<HttpServer<Arc<Context>>> {

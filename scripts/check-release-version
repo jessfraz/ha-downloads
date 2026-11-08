@@ -15,12 +15,16 @@ def main() -> None:
     cargo = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
     python = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     app = yaml.safe_load((ROOT / "downloads/config.yaml").read_text())["version"]
-    adapter = json.loads((ROOT / "custom_components/downloads/manifest.json").read_text())[
+    companion = json.loads((ROOT / "custom_components/downloads/manifest.json").read_text())[
         "version"
     ]
-    tests = tomllib.loads((ROOT / "integration/pyproject.toml").read_text())["project"]["version"]
-    if not isinstance(app, str) or len({cargo, python, app, adapter, tests}) != 1:
-        sys.exit("Cargo, Python and HA release versions differ")
+    integration = tomllib.loads((ROOT / "integration/pyproject.toml").read_text())["project"][
+        "version"
+    ]
+    if not isinstance(app, str) or any(
+        version != cargo for version in (python, app, companion, integration)
+    ):
+        sys.exit("Cargo, Python, HA app and companion release versions differ")
     if len(sys.argv) > 1 and sys.argv[1] != "v" + cargo:
         sys.exit("Release tag differs from the package version")
     print("Release versions agree: " + cargo)

@@ -1,7 +1,7 @@
 name: Downloads
-version: "0.1.7"
+version: "0.2.0"
 slug: downloads
-description: SABnzbd behind a Gluetun VPN with a firewall kill switch
+description: Movies and TV with saved Radarr/Sonarr settings and VPN-protected downloads
 url: https://github.com/jessfraz/ha-downloads
 arch: [amd64, aarch64]
 image: ghcr.io/jessfraz/ha-downloads
@@ -14,7 +14,7 @@ backup: cold
 ingress: true
 ingress_port: 8099
 ingress_stream: true
-panel_admin: true
+panel_admin: false
 panel_icon: mdi:download-network-outline
 privileged: [NET_ADMIN, NET_RAW]
 devices:
@@ -40,6 +40,15 @@ options:
   network:
     local_subnets: ["172.30.32.0/23"]
   api_token: ""
+  media:
+    radarr: {url: "", api_key: ""}
+    sonarr: {url: "", api_key: ""}
+    prowlarr: {url: "", api_key: ""}
+    plex: {url: "", api_key: ""}
+    request_token: ""
+    admin_token: ""
+    integration_token: ""
+    requester_user_ids: []
 schema:
   vpn:
     provider: str
@@ -53,3 +62,14 @@ schema:
     local_subnets:
       - str
   api_token: password
+  media:
+    radarr: {url: str, api_key: password}
+    sonarr: {url: str, api_key: password}
+    prowlarr: {url: str, api_key: password}
+    plex: {url: str, api_key: password}
+    request_token: password
+    admin_token: password
+    integration_token: password
+    requester_user_ids: [str]
+discovery:
+  - downloads

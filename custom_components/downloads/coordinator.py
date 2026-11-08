@@ -1,163 +1,100 @@
-"""Poll only the existing internal, credential-free health endpoint."""
+"""Entry-owned cached projections of the backend's health decisions."""
 
-import asyncio
-import json
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from datetime import timedelta
-from enum import StrEnum
-from ipaddress import ip_address
-from time import monotonic
-from typing import Self
 
-from aiohasupervisor import SupervisorError
 from aiohttp import ClientError
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util.json import JsonObjectType
+from homeassistant.util import dt as dt_util
 
-from .const import (
-    APP_URL,
-    CONF_ADDON_SLUG,
-    DOMAIN,
-    HEALTH_PORT,
-    REQUEST_TIMEOUT_SECONDS,
-)
+from .client import Actor, DownloadsClient, ResponseTooLarge
+from .const import API_PREFIX, DOMAIN
+from .models import HealthSnapshot, System
+from .native_health import NativeHealthCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-_MAX_RESPONSE_BYTES = 16_384
-_MAX_AGE_MS = 30_000
 
 
-class Reason(StrEnum):
-    """Allowlisted readiness reasons from the Rust service."""
-
-    NOT_READY = "not_ready"
-    CHECKS_MISSING = "checks_missing"
-    CHECKS_STALE = "checks_stale"
-    VPN_UNAVAILABLE = "vpn_unavailable"
-    FIREWALL_UNVERIFIED = "firewall_unverified"
-    DNS_UNVERIFIED = "dns_unverified"
-    DOWNLOADER_UNAVAILABLE = "downloader_unavailable"
-    DOWNLOADER_MODULES_UNAVAILABLE = "downloader_modules_unavailable"
+def now_ms() -> int:
+    return int(dt_util.utcnow().timestamp() * 1000)
 
 
-@dataclass(frozen=True)
-class HealthData:
-    """A bounded projection with a monotonic age for cached Assist queries."""
+class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
+    """Do not reproduce dependency logic or probe providers inside HA."""
 
-    ready: bool
-    state: str
-    reasons: tuple[Reason, ...]
-    checked_at_unix_ms: int | None
-    age_ms: int | None
-    received_at: float = field(default_factory=monotonic)
-
-    @classmethod
-    def parse(cls, value: object) -> Self:
-        """Reject old or malformed contracts instead of inferring readiness."""
-        if not isinstance(value, dict):
-            raise ValueError("Invalid health response")
-        ready, state, reasons = (
-            value.get("ready"),
-            value.get("state"),
-            value.get("reasons"),
-        )
-        checked, age = value.get("checked_at_unix_ms"), value.get("age_ms")
-        if (
-            type(ready) is not bool
-            or not isinstance(state, str)
-            or state
-            not in {"needs_configuration", "starting", "ready", "degraded", "stopping"}
-            or not isinstance(reasons, list)
-            or len(reasons) > len(Reason)
-            or any(not isinstance(reason, str) for reason in reasons)
-            or (checked is not None and (type(checked) is not int or checked < 0))
-            or (age is not None and (type(age) is not int or age < 0))
-            or value.get("max_age_ms") != _MAX_AGE_MS
-        ):
-            raise ValueError("Invalid health response")
-        parsed_reasons = tuple(Reason(reason) for reason in reasons)
-        if ready and (
-            state != "ready"
-            or parsed_reasons
-            or checked is None
-            or age is None
-            or age > _MAX_AGE_MS
-        ):
-            raise ValueError("Invalid readiness evidence")
-        return cls(ready, state, parsed_reasons, checked, age)
-
-    def projection(self) -> JsonObjectType:
-        """Never return connection identifiers, options or backend free text."""
-        age = (
-            self.age_ms + max(0, round((monotonic() - self.received_at) * 1000))
-            if self.age_ms is not None
-            else None
-        )
-        reasons = [reason.value for reason in self.reasons]
-        if (
-            age is not None
-            and age > _MAX_AGE_MS
-            and Reason.CHECKS_STALE not in self.reasons
-        ):
-            reasons.append(Reason.CHECKS_STALE.value)
-        return {
-            "ready": self.ready and age is not None and age <= _MAX_AGE_MS,
-            "state": self.state,
-            "reasons": reasons,
-            "checked_at_unix_ms": self.checked_at_unix_ms,
-            "age_ms": age,
-            "max_age_ms": _MAX_AGE_MS,
-        }
-
-
-class DownloadsCoordinator(DataUpdateCoordinator[HealthData]):
-    """Resolve the current app IP from Supervisor on every update."""
-
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: DownloadsClient,
+        native_health: NativeHealthCoordinator | None = None,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             config_entry=entry,
-            update_interval=timedelta(seconds=10),
+            update_interval=timedelta(seconds=15),
+            always_update=False,
         )
-        self.slug: str = entry.data[CONF_ADDON_SLUG]
+        self.client = client
+        self.native_health = native_health
+        self.system: System | None = None
+        self._cancel_expiry: Callable[[], None] | None = None
+        entry.async_on_unload(self.async_cancel_expiry)
 
-    async def _async_update_data(self) -> HealthData:
-        return await async_fetch_health(self.hass, self.slug)
+    @callback
+    def async_cancel_expiry(self) -> None:
+        """The shared HTTP session is Core-owned; only this timer is ours."""
+        if self._cancel_expiry is not None:
+            self._cancel_expiry()
+            self._cancel_expiry = None
 
+    @callback
+    def _schedule_expiry(self, data: HealthSnapshot) -> None:
+        self.async_cancel_expiry()
+        now = now_ms()
+        expiries = [item.expires_at for item in data.readiness]
+        expiries.extend(item.expires_at for item in data.components if item.expires_at is not None)
+        future = [expiry for expiry in expiries if expiry > now]
+        if future:
+            self._cancel_expiry = async_call_later(
+                self.hass, (min(future) - now) / 1000, self._expired
+            )
 
-async def async_fetch_health(hass: HomeAssistant, slug: str) -> HealthData:
-    """Resolve only a Supervisor-owned private app endpoint, without credentials."""
-    from homeassistant.components.hassio import get_supervisor_client
+    @callback
+    def _expired(self, _now: object) -> None:
+        """Invalidate cached entity values exactly when their evidence expires."""
+        self._cancel_expiry = None
+        if self.data is not None:
+            self.async_update_listeners()
+            self._schedule_expiry(self.data)
 
-    try:
-        async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
-            app = await get_supervisor_client(hass).addons.addon_info(slug)
-            if app.url != APP_URL or app.state != "started":
-                raise UpdateFailed("The Downloads app is not running.")
-            address = ip_address(app.ip_address)
-            if not address.is_private or address.is_unspecified or address.is_loopback:
-                raise UpdateFailed("The Downloads app has no private address.")
-            host = f"[{address}]" if address.version == 6 else str(address)
-            async with async_get_clientsession(hass).get(
-                f"http://{host}:{HEALTH_PORT}/healthz", allow_redirects=False
-            ) as response:
-                if response.status not in {200, 503}:
-                    raise UpdateFailed("Downloads health is unavailable.")
-                try:
-                    body = await response.content.readexactly(_MAX_RESPONSE_BYTES + 1)
-                except asyncio.IncompleteReadError as error:
-                    body = error.partial
-                if len(body) > _MAX_RESPONSE_BYTES:
-                    raise UpdateFailed("Downloads health response is too large.")
-                data = HealthData.parse(json.loads(body))
-                if response.status == 503 and data.ready:
-                    raise UpdateFailed("Downloads returned inconsistent health.")
-                return data
-    except SupervisorError, ClientError, TimeoutError, ValueError, TypeError:
-        raise UpdateFailed("Downloads health could not be verified.") from None
+    async def _async_update_data(self) -> HealthSnapshot:
+        try:
+            system_response = await self.client.request("GET", f"{API_PREFIX}/system")
+            if system_response.status in {401, 403}:
+                raise ConfigEntryAuthFailed("The Downloads credential was rejected")
+            if system_response.status != 200:
+                raise UpdateFailed("Cannot read Downloads capabilities")
+            system = System.parse(system_response.json())
+            if system.role != "integration" or not system.read or system.admin:
+                raise ConfigEntryAuthFailed("A dedicated Downloads integration token is required")
+            response = await self.client.request(
+                "GET", f"{API_PREFIX}/health/stack", actor=Actor("integration")
+            )
+            if response.status in {401, 403}:
+                raise ConfigEntryAuthFailed("The Downloads credential was rejected")
+            if response.status != 200:
+                raise UpdateFailed("Cannot read Downloads health")
+            data = HealthSnapshot.parse(response.json())
+        except ClientError, TimeoutError, ResponseTooLarge, ValueError:
+            raise UpdateFailed("Cannot read Downloads health") from None
+        self.system = system
+        self._schedule_expiry(data)
+        return data

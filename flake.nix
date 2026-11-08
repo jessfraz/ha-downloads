@@ -42,11 +42,11 @@
         };
         cargoLock.lockFile = ./Cargo.lock;
         cargoBuildFlags = ["--bin" "ha-downloads"];
-        cargoTestFlags = ["--test" "cli"];
+        cargoTestFlags = ["--test" "cli" "--test" "cli_client"];
         __darwinAllowLocalNetworking = true;
         nativeBuildInputs = [pkgs.pkg-config];
         meta = {
-          description = "Read-only JSON client for Downloads health";
+          description = "Typed JSON client for Downloads";
           license = pkgs.lib.licenses.mit;
           mainProgram = "ha-downloads";
           platforms = systems;
@@ -59,7 +59,7 @@
     apps = nixpkgs.lib.genAttrs systems (system: let
       cli = {
         type = "app";
-        meta.description = "Read-only JSON client for Downloads health";
+        meta.description = "Typed JSON client for Downloads";
         program = "${self.packages.${system}.ha-downloads}/bin/ha-downloads";
       };
     in {
