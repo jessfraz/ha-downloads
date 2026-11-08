@@ -27,6 +27,7 @@ pub(crate) struct Cache {
     pub searches: BTreeMap<String, (Vec<MediaItem>, u64)>,
     pub roots: BTreeMap<ManagerId, RootObservation>,
     pub download_storage: Option<(bool, u64)>,
+    pub imports: BTreeMap<ManagerId, (Vec<crate::media::imports::NativeImport>, u64)>,
 }
 pub(crate) struct RootObservation {
     pub accessible: bool,
@@ -43,6 +44,7 @@ pub struct MediaService {
     pub(crate) health: RwLock<Vec<ComponentHealth>>,
     pub(crate) operations: Mutex<()>,
     pub(crate) egress: crate::media::upstream::EgressBoundary,
+    pub(crate) updates: crate::media::supervisor::UpdateSource,
     accepting: AtomicBool,
 }
 impl MediaService {
@@ -69,6 +71,7 @@ impl MediaService {
             operations: Mutex::new(()),
             accepting: AtomicBool::new(true),
             egress,
+            updates: crate::media::supervisor::UpdateSource::from_environment(),
         }))
     }
     pub fn stop_accepting(&self) {

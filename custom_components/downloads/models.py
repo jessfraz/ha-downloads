@@ -1,6 +1,7 @@
 """Typed public-contract projections; the Rust service owns domain decisions."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Self
 from uuid import UUID
@@ -61,6 +62,7 @@ class IssueSeverity(StrEnum):
 
 
 class HealthIssueCode(StrEnum):
+    UPDATE_AVAILABLE = "update_available"
     UPSTREAM_HEALTH = "upstream_health"
     INDEXER_UNAVAILABLE = "indexer_unavailable"
     DOWNLOAD_CLIENT_UNAVAILABLE = "download_client_unavailable"
@@ -203,6 +205,8 @@ def validate_media_item(value: object) -> None:
     fields.add(id_field)
     if kind is MediaKind.SERIES:
         fields.add("seasons")
+    if "metadata" in data:
+        fields.add("metadata")
     exact(data, fields)
     integer(data[id_field], minimum=1, maximum=2**31 - 1)
     RequestAvailability.parse(data["request"])
@@ -214,6 +218,57 @@ def validate_media_item(value: object) -> None:
         integer(library["upstream_id"], minimum=1, maximum=2**32 - 1)
     else:
         raise ValueError("Invalid library state")
+    if data.get("metadata") is not None:
+        validate_media_metadata(kind, data["metadata"])
+
+
+def validate_quality(value: object) -> None:
+    """Validate observed release quality, never native profile settings."""
+    data = exact(value, {"name", "resolution", "source", "modifier", "revision"})
+    text(data["name"])
+    if data["resolution"] is not None:
+        integer(data["resolution"], maximum=65535)
+    for field in ("source", "modifier"):
+        if data[field] is not None:
+            text(data[field])
+    if data["revision"] is not None:
+        revision = exact(data["revision"], {"version", "real", "is_repack"})
+        integer(revision["version"], maximum=2**32 - 1)
+        integer(revision["real"], maximum=2**32 - 1)
+        boolean(revision["is_repack"])
+
+
+def validate_media_metadata(kind: MediaKind, value: object) -> None:
+    fields = {"runtime_minutes", "genres", "certification"}
+    fields |= {"studio", "file"} if kind is MediaKind.MOVIE else {"network", "next_airing"}
+    data = exact(value, fields)
+    if data["runtime_minutes"] is not None:
+        integer(data["runtime_minutes"], maximum=2**32 - 1)
+    genres = data["genres"]
+    if not isinstance(genres, list) or len(genres) > 100:
+        raise ValueError("Invalid genres")
+    for genre in genres:
+        text(genre)
+    for field in ("certification", "studio" if kind is MediaKind.MOVIE else "network"):
+        if data[field] is not None:
+            text(data[field])
+    if kind is MediaKind.SERIES and data["next_airing"] is not None:
+        timestamp = text(data["next_airing"], maximum=40)
+        if not timestamp.endswith("Z"):
+            raise ValueError("Invalid UTC timestamp")
+        datetime.fromisoformat(timestamp)
+    if kind is MediaKind.MOVIE and data["file"] is not None:
+        file = exact(
+            data["file"],
+            {"quality", "size_bytes", "video_codec", "audio_codec", "audio_channels"},
+        )
+        if file["quality"] is not None:
+            validate_quality(file["quality"])
+        if file["size_bytes"] is not None:
+            integer(file["size_bytes"])
+        for field in ("video_codec", "audio_codec", "audio_channels"):
+            if file[field] is not None:
+                text(file[field])
 
 
 def validate_media_response(path: str, value: object) -> None:

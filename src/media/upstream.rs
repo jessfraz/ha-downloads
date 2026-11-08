@@ -292,6 +292,37 @@ pub struct UpMovie {
     pub movie_file_id: u32,
     #[serde(default)]
     pub tags: Vec<u32>,
+    #[serde(flatten)]
+    pub metadata: UpMovieMetadata,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpMovieMetadata {
+    pub runtime: Option<u32>,
+    pub genres: Vec<String>,
+    pub studio: Option<String>,
+    pub certification: Option<String>,
+    pub movie_file: Option<UpMovieFile>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpMovieFile {
+    #[serde(default)]
+    pub quality: Option<UpDownloadQuality>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub media_info: Option<UpMediaInfo>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpMediaInfo {
+    #[serde(default)]
+    pub video_codec: Option<String>,
+    #[serde(default)]
+    pub audio_codec: Option<String>,
+    #[serde(default)]
+    pub audio_channels: Option<f64>,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -345,6 +376,17 @@ pub struct UpSeries {
     pub tags: Vec<u32>,
     #[serde(default)]
     pub seasons: Vec<UpSeason>,
+    #[serde(flatten)]
+    pub metadata: UpSeriesMetadata,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpSeriesMetadata {
+    pub runtime: Option<u32>,
+    pub genres: Vec<String>,
+    pub network: Option<String>,
+    pub certification: Option<String>,
+    pub next_airing: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -362,7 +404,7 @@ pub struct UpEpisode {
     #[serde(default)]
     pub has_file: bool,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpQueue {
     pub id: u32,
@@ -380,17 +422,71 @@ pub struct UpQueue {
     #[serde(default)]
     pub episode: Option<UpQueueEpisode>,
     #[serde(default)]
-    pub size: f64,
+    pub size: Option<f64>,
     #[serde(default)]
-    pub sizeleft: f64,
+    pub sizeleft: Option<f64>,
     #[serde(default)]
     pub status: String,
     #[serde(default)]
     pub tracked_download_status: String,
     #[serde(default)]
     pub tracked_download_state: String,
+    #[serde(default)]
+    pub quality: Option<UpDownloadQuality>,
+    #[serde(default)]
+    pub timeleft: Option<String>,
+    #[serde(default)]
+    pub download_client: Option<String>,
+    #[serde(default)]
+    pub indexer: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub languages: Vec<UpNamed>,
+    #[serde(default)]
+    pub custom_formats: Vec<UpNamed>,
+    #[serde(default)]
+    pub custom_format_score: Option<i32>,
+    #[serde(default)]
+    pub added: Option<String>,
+    #[serde(default)]
+    pub estimated_completion_time: Option<String>,
+    #[serde(default)]
+    pub status_messages: Vec<UpDownloadMessage>,
+    #[serde(default)]
+    pub error_message: Option<String>,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UpDownloadQuality {
+    pub quality: UpQuality,
+    #[serde(default)]
+    pub revision: Option<UpRevision>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UpQuality {
+    pub name: String,
+    #[serde(default)]
+    pub resolution: Option<u16>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub modifier: Option<String>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpRevision {
+    pub version: u32,
+    pub real: u32,
+    pub is_repack: bool,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UpDownloadMessage {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub messages: Vec<String>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpQueueEpisode {
     pub season_number: u16,
@@ -423,7 +519,7 @@ pub struct UpRoot {
     #[serde(default, rename = "freeSpace")]
     pub free_space: Option<u64>,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UpHealth {
     pub source: String,
     #[serde(rename = "type")]
@@ -431,6 +527,8 @@ pub struct UpHealth {
     // Private input for exact release-notice recognition, never public health text.
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default, rename = "wikiUrl")]
+    pub wiki_url: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UpStatus {

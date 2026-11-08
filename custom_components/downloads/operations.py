@@ -11,6 +11,7 @@ from homeassistant.util.json import JsonObjectType
 from .access import AccessFailure, AccessGuard
 from .client import BackendResponse, ResponseTooLarge
 from .const import API_PREFIX, MAX_REQUEST_BYTES
+from .imports import ImportedItem
 from .models import (
     ErrorCode,
     SearchKind,
@@ -96,6 +97,12 @@ REQUEST_SCHEMA = vol.Schema(
     }
 )
 STATUS_SCHEMA = vol.Schema({vol.Required("target"): TARGET_SCHEMA})
+IMPORTS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("limit", default=10): vol.All(int, vol.Range(min=1, max=20)),
+        vol.Optional("page_token"): vol.All(str, vol.Length(min=1, max=4096)),
+    }
+)
 
 
 def response_document(response: BackendResponse, *, path: str | None = None) -> JsonObjectType:
@@ -118,6 +125,12 @@ def response_document(response: BackendResponse, *, path: str | None = None) -> 
         data = response.json()
         if path is not None:
             validate_media_response(path, data)
+            if path.split("?", 1)[0] == "imports":
+                items = data.get("items")
+                if not isinstance(items, list) or len(items) > 100:
+                    raise ValueError("Invalid imports page")
+                for item in items:
+                    ImportedItem.parse(item)
     except ValueError:
         raise AccessFailure("invalid_response", "Downloads returned an invalid response.") from None
     # All success responses are service-owned JSON objects. Their nested domain
@@ -165,6 +178,14 @@ async def async_search(guard: AccessGuard, values: dict[str, object]) -> JsonObj
         "GET",
         "search?" + urlencode({"query": query, "kind": kind.value, "limit": limit}),
     )
+
+
+async def async_imports(guard: AccessGuard, values: dict[str, object]) -> JsonObjectType:
+    """Read one bounded page, including work initiated in the native managers."""
+    query = {"limit": str(integer(values.get("limit", 10), minimum=1, maximum=20))}
+    if "page_token" in values:
+        query["page_token"] = text(values["page_token"], maximum=4096)
+    return await _call(guard, "GET", "imports?" + urlencode(query))
 
 
 async def async_request(guard: AccessGuard, values: dict[str, object]) -> JsonObjectType:

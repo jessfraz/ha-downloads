@@ -63,6 +63,11 @@ async def test_bridge_auth_and_request_actor_cannot_be_forged(
         ("post", "vpn/stop"),
         ("get", "../system"),
         ("get", "managers/radarr/credentials"),
+        ("post", "queue/radarr:12"),
+        ("delete", "queue/sonarr:12"),
+        ("get", "queue/prowlarr:12"),
+        ("get", "queue/radarr:0"),
+        ("get", "queue/radarr:012"),
     ],
 )
 async def test_no_admin_or_generic_proxy_routes(
@@ -148,6 +153,105 @@ async def test_parent_setup_availability_is_typed_for_both_media_kinds(
     response = await client.get(f"{PREFIX}/series/10")
     assert response.status == 502
     assert (await response.json())["error_code"] == "invalid_response"
+
+
+@pytest.mark.parametrize("kind", ["movie", "series"])
+async def test_observed_media_metadata_crosses_the_authenticated_bridge(
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    entry: DownloadsConfigEntry,
+    backend: Backend,
+    kind: str,
+) -> None:
+    metadata = {
+        "runtime_minutes": 97,
+        "genres": ["Science Fiction"],
+        "certification": "PG-13",
+    }
+    if kind == "movie":
+        route = "movies/14337"
+        item = MOVIE_ITEM
+        metadata.update(
+            studio="Example Studio",
+            file={
+                "quality": {
+                    "name": "Remux-2160p",
+                    "resolution": 2160,
+                    "source": "bluray",
+                    "modifier": "remux",
+                    "revision": {"version": 2, "real": 0, "is_repack": True},
+                },
+                "size_bytes": 42_000_000_000,
+                "video_codec": "HEVC",
+                "audio_codec": "TrueHD",
+                "audio_channels": "7.1",
+            },
+        )
+    else:
+        route = "series/10"
+        item = SERIES_ITEM
+        metadata.update(network="Example Network", next_airing="2026-11-08T20:00:00Z")
+    body = {**item, "metadata": metadata}
+    backend.responses[("GET", f"/api/v1/{route}")] = (200, body)
+    client = await hass_client(hass_user_token)
+    response = await client.get(f"{PREFIX}/{route}")
+    assert response.status == 200
+    assert await response.json() == body
+    # Optional metadata must not become a path for native settings or file paths.
+    metadata["quality_profile_id"] = 1
+    assert (await client.get(f"{PREFIX}/{route}")).status == 502
+
+
+@pytest.mark.parametrize("queue_id", ["radarr:12", "sonarr:34"])
+async def test_queue_details_use_a_single_authenticated_read(
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    hass_user: MockUser,
+    entry: DownloadsConfigEntry,
+    backend: Backend,
+    queue_id: str,
+) -> None:
+    route = f"queue/{queue_id}"
+    manager = queue_id.split(":", 1)[0]
+    body = {
+        "id": queue_id,
+        "manager": manager,
+        "media": {"kind": "movie", "tmdb_id": 14337}
+        if manager == "radarr"
+        else {"kind": "series", "tvdb_id": 10},
+        "title": "Example release",
+        "episode": None,
+        "acquisition": {"state": "downloading", "completed_bytes": 40, "total_bytes": 100},
+        "status": "downloading",
+        "quality": None,
+        "progress": {"completed_bytes": 40, "total_bytes": 100, "remaining_bytes": 60},
+        "remaining_seconds": 120,
+        "download_client": "SABnzbd",
+        "indexer": None,
+        "protocol": "usenet",
+        "import_status": "not_started",
+        "warnings": [],
+        "languages": [],
+        "custom_formats": [],
+        "custom_format_score": None,
+        "added_at": None,
+        "estimated_completion_at": None,
+        "observed_at_unix_ms": 100,
+    }
+    backend.responses[("GET", f"/api/v1/{route}")] = (200, body)
+    client = await hass_client(hass_user_token)
+    count = len(backend.requests)
+    response = await client.get(f"{PREFIX}/{route}")
+    assert response.status == 200
+    assert await response.json() == body
+    assert len(backend.requests) == count + 1
+    read = backend.requests[-1]
+    assert read.method == "GET"
+    assert read.path == f"/api/v1/{route}"
+    assert read.headers["X-Downloads-Actor-Id"] == hass_user.id
+    assert read.headers["Authorization"] == "Bearer test-integration-token"
+    assert (await client.get(f"{PREFIX}/{route}?api_key=private")).status == 400
+    assert len(backend.requests) == count + 1
 
 
 @pytest.mark.parametrize(

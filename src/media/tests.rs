@@ -37,6 +37,21 @@ struct NativeState {
     unavailable: bool,
     library_unavailable: bool,
     queue_unavailable: bool,
+    movie_queue: Vec<UpQueue>,
+    series_queue: Vec<UpQueue>,
+    prowlarr_health: Vec<UpHealth>,
+    supervisor_update: Option<bool>,
+    supervisor_unrelated: bool,
+    native_port: u16,
+    movie_imports: Vec<crate::media::imports::NativeImport>,
+    series_imports: Vec<crate::media::imports::NativeImport>,
+    movie_import_total: Option<u32>,
+    series_import_total: Option<u32>,
+    history_unavailable: bool,
+    queries: Vec<(String, String)>,
+    plex_status: u16,
+    plex_requires_key: bool,
+    plex_metadata: Vec<PlexFixtureMetadata>,
     import_on_monitor: bool,
     unmonitor_on_import: bool,
 }
@@ -57,6 +72,7 @@ impl Native {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let state = Arc::new(Mutex::new(NativeState {
+            native_port: listener.local_addr().unwrap().port(),
             quality_profiles: vec![UpNamed {
                 id: 1,
                 name: "Native quality".into(),
@@ -134,9 +150,91 @@ struct ReceivedMonitoring {
 }
 #[derive(Serialize)]
 struct EmptyQueue {
-    records: Vec<()>,
+    records: Vec<UpQueue>,
     #[serde(rename = "totalRecords")]
     total_records: u32,
+}
+#[derive(Serialize)]
+struct SupervisorEnvelope<T> {
+    result: &'static str,
+    data: T,
+}
+#[derive(Serialize)]
+struct SupervisorInventory {
+    addons: Vec<SupervisorSummary>,
+}
+#[derive(Serialize)]
+struct SupervisorSummary {
+    slug: &'static str,
+    name: &'static str,
+}
+#[derive(Serialize)]
+struct SupervisorApp {
+    hostname: &'static str,
+    ip_address: &'static str,
+    network: std::collections::BTreeMap<&'static str, Option<u16>>,
+    host_network: bool,
+    version: &'static str,
+    version_latest: &'static str,
+    update_available: bool,
+}
+#[derive(Serialize)]
+struct SupervisorCore {
+    ip_address: &'static str,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryFixture {
+    records: Vec<crate::media::imports::NativeImport>,
+    total_records: u32,
+}
+#[derive(Serialize)]
+struct PlexFixtureEnvelope<T> {
+    #[serde(rename = "MediaContainer")]
+    container: T,
+}
+#[derive(Clone, Serialize)]
+struct PlexFixtureContainer {
+    #[serde(rename = "Metadata")]
+    metadata: Vec<PlexFixtureMetadata>,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlexFixtureMetadata {
+    rating_key: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "Guid")]
+    guids: Vec<PlexFixtureGuid>,
+    updated_at: u64,
+    parent_index: Option<u16>,
+    index: Option<u16>,
+    #[serde(rename = "Media")]
+    media: Vec<PlexFixtureMedia>,
+}
+#[derive(Clone, Serialize)]
+struct PlexFixtureGuid {
+    id: String,
+}
+#[derive(Clone, Serialize)]
+struct PlexFixtureMedia {
+    #[serde(rename = "Part")]
+    parts: Vec<PlexFixturePart>,
+}
+#[derive(Clone, Serialize)]
+struct PlexFixturePart {
+    file: String,
+    size: u64,
+    exists: Option<bool>,
+    accessible: Option<bool>,
+    #[serde(rename = "Stream")]
+    streams: Option<Vec<PlexFixtureStream>>,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlexFixtureStream {
+    stream_type: u8,
+    language_code: Option<String>,
 }
 async fn handle_native(mut stream: TcpStream, state: Arc<Mutex<NativeState>>) {
     let mut input = vec![];
@@ -178,13 +276,40 @@ async fn handle_native(mut stream: TcpStream, state: Arc<Mutex<NativeState>>) {
     }
     let mut guard = state.lock().await;
     guard.calls.push((method.into(), path.into()));
+    if let Some((_, query)) = target.split_once('?') {
+        guard.queries.push((path.into(), query.into()));
+    }
     let mut status = 200;
     if guard.unavailable
         || (guard.library_unavailable && matches!(path, "/api/v3/movie" | "/api/v3/series"))
-        || (guard.queue_unavailable && path == "/api/v3/queue")
+        || (guard.queue_unavailable && matches!(path, "/api/v3/queue" | "/api/v3/queue/details"))
+        || (guard.history_unavailable && path == "/api/v3/history")
     {
         drop(guard);
         send_native(&mut stream, 503, b"{}").await;
+        return;
+    }
+    if (path.starts_with("/supervisor/") || path.starts_with("/addons/") || path == "/core/info")
+        && guard.supervisor_update.is_none()
+    {
+        drop(guard);
+        send_native(&mut stream, 503, b"{}").await;
+        return;
+    }
+    if path.starts_with("/library/")
+        && (guard.plex_status != 200
+            || (guard.plex_requires_key
+                && !headers
+                    .lines()
+                    .any(|line| line.eq_ignore_ascii_case("x-plex-token: fixture-plex-key"))))
+    {
+        let status = if guard.plex_status != 200 && guard.plex_status != 0 {
+            guard.plex_status
+        } else {
+            401
+        };
+        drop(guard);
+        send_native(&mut stream, status, b"{}").await;
         return;
     }
     let bytes = match (method, path) {
@@ -194,7 +319,88 @@ async fn handle_native(mut stream: TcpStream, state: Arc<Mutex<NativeState>>) {
             })
             .unwrap()
         }
-        ("GET", "/api/v3/health" | "/api/v1/health") => serde_json::to_vec(&guard.health).unwrap(),
+        ("GET", "/api/v3/health") => serde_json::to_vec(&guard.health).unwrap(),
+        ("GET", "/api/v3/history") => {
+            let sonarr = headers
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("x-api-key: fixture-sonarr-key"));
+            let (records, total) = if sonarr {
+                (&guard.series_imports, guard.series_import_total)
+            } else {
+                (&guard.movie_imports, guard.movie_import_total)
+            };
+            serde_json::to_vec(&HistoryFixture {
+                records: records.clone(),
+                total_records: total.unwrap_or(records.len() as u32),
+            })
+            .unwrap()
+        }
+        ("GET", "/library/sections") => b"{\"MediaContainer\":{}}".to_vec(),
+        ("GET", "/library/all") => serde_json::to_vec(&PlexFixtureEnvelope {
+            container: PlexFixtureContainer {
+                metadata: guard.plex_metadata.clone(),
+            },
+        })
+        .unwrap(),
+        ("GET", path) if path.starts_with("/library/metadata/") => {
+            let key = path.trim_start_matches("/library/metadata/");
+            serde_json::to_vec(&PlexFixtureEnvelope {
+                container: PlexFixtureContainer {
+                    metadata: guard
+                        .plex_metadata
+                        .iter()
+                        .filter(|metadata| metadata.rating_key == key)
+                        .cloned()
+                        .collect(),
+                },
+            })
+            .unwrap()
+        }
+        ("GET", "/api/v1/health") => {
+            if guard.prowlarr_health.is_empty() {
+                serde_json::to_vec(&guard.health).unwrap()
+            } else {
+                serde_json::to_vec(&guard.prowlarr_health).unwrap()
+            }
+        }
+        ("GET", "/supervisor/info") => serde_json::to_vec(&SupervisorEnvelope {
+            result: "ok",
+            data: SupervisorInventory {
+                addons: vec![SupervisorSummary {
+                    slug: "fixture_prowlarr",
+                    name: "Prowlarr",
+                }],
+            },
+        })
+        .unwrap(),
+        ("GET", "/core/info") => serde_json::to_vec(&SupervisorEnvelope {
+            result: "ok",
+            data: SupervisorCore {
+                ip_address: if guard.supervisor_unrelated {
+                    "192.0.2.10"
+                } else {
+                    "127.0.0.1"
+                },
+            },
+        })
+        .unwrap(),
+        ("GET", "/addons/fixture_prowlarr/info") => serde_json::to_vec(&SupervisorEnvelope {
+            result: "ok",
+            data: SupervisorApp {
+                hostname: "fixture-prowlarr",
+                ip_address: "192.0.2.20",
+                network: std::collections::BTreeMap::from([("9696/tcp", Some(guard.native_port))]),
+                host_network: false,
+                version: "1.0",
+                version_latest: if guard.supervisor_update == Some(true) {
+                    "2.0"
+                } else {
+                    "1.0"
+                },
+                update_available: guard.supervisor_update == Some(true),
+            },
+        })
+        .unwrap(),
         ("GET", "/api/v3/qualityprofile") => serde_json::to_vec(&guard.quality_profiles).unwrap(),
         ("GET", "/api/v3/rootfolder") => serde_json::to_vec(&guard.roots).unwrap(),
         ("GET", "/api/v3/tag") => serde_json::to_vec(&Vec::<UpTag>::new()).unwrap(),
@@ -233,11 +439,32 @@ async fn handle_native(mut stream: TcpStream, state: Arc<Mutex<NativeState>>) {
             guard.monitored.push(body.episode_ids);
             b"[]".to_vec()
         }
-        ("GET", "/api/v3/queue") => serde_json::to_vec(&EmptyQueue {
-            records: vec![],
-            total_records: 0,
-        })
-        .unwrap(),
+        ("GET", "/api/v3/queue") => {
+            let records = if headers
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("x-api-key: fixture-sonarr-key"))
+            {
+                guard.series_queue.clone()
+            } else {
+                guard.movie_queue.clone()
+            };
+            serde_json::to_vec(&EmptyQueue {
+                total_records: records.len() as u32,
+                records,
+            })
+            .unwrap()
+        }
+        ("GET", "/api/v3/queue/details") => {
+            let records = if headers
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("x-api-key: fixture-sonarr-key"))
+            {
+                &guard.series_queue
+            } else {
+                &guard.movie_queue
+            };
+            serde_json::to_vec(records).unwrap()
+        }
         ("POST", "/api/v3/movie") => {
             let add: ReceivedAdd =
                 serde_json::from_slice(&input[header_end..header_end + size]).unwrap();
@@ -344,6 +571,7 @@ fn native_movie(id: u32, quality: u32) -> UpMovie {
         has_file: false,
         movie_file_id: 0,
         tags: vec![],
+        metadata: UpMovieMetadata::default(),
     }
 }
 fn native_series(id: u32) -> UpSeries {
@@ -370,6 +598,7 @@ fn native_series(id: u32) -> UpSeries {
                 statistics: None,
             })
             .collect(),
+        metadata: UpSeriesMetadata::default(),
     }
 }
 fn native_episode(id: u32, season: u16, date: &str, has_file: bool) -> UpEpisode {
@@ -398,6 +627,15 @@ struct Harness {
 }
 impl Harness {
     async fn new() -> Self {
+        Self::with_supervisor(false).await
+    }
+    async fn with_supervisor(supervised: bool) -> Self {
+        Self::with_options(supervised, None).await
+    }
+    async fn with_plex(key: bool) -> Self {
+        Self::with_options(false, Some(key)).await
+    }
+    async fn with_options(supervised: bool, plex: Option<bool>) -> Self {
         let native = Native::start().await;
         let directory = tempfile::tempdir().unwrap();
         let config = MediaConfig {
@@ -407,7 +645,18 @@ impl Harness {
             },
             sonarr: MediaConnection {
                 url: native.url.clone(),
+                api_key: "fixture-sonarr-key".to_owned().into(),
+            },
+            prowlarr: MediaConnection {
+                url: native.url.clone(),
                 api_key: "fixture-upstream-key".to_owned().into(),
+            },
+            plex: match plex {
+                Some(key) => MediaConnection {
+                    url: native.url.clone(),
+                    api_key: if key { "fixture-plex-key" } else { "" }.to_owned().into(),
+                },
+                None => MediaConnection::default(),
             },
             request_token: REQUESTER.to_owned().into(),
             admin_token: ADMIN.to_owned().into(),
@@ -415,10 +664,14 @@ impl Harness {
             ..MediaConfig::default()
         };
         let (status, rx) = watch::channel(Status::needs_configuration("fixture"));
-        let service =
+        let mut service =
             MediaService::open(config.clone(), directory.path().join("media"), rx, vec![])
                 .await
                 .unwrap();
+        if supervised {
+            Arc::get_mut(&mut service).unwrap().updates =
+                crate::media::supervisor::UpdateSource::for_test(&format!("{}/", native.url));
+        }
         let api = start_api(service.clone(), status.subscribe());
         let url = format!("http://{}", api.local_addr());
         let client = reqwest::Client::builder()
@@ -1873,13 +2126,19 @@ async fn real_home_assistant_repairs_use_native_manager_health() {
                     && matches!(item.observation, Observation::Observed { .. })
             }) {
                 assert!(
-                    matches!(
-                        component.observation,
+                    match &component.observation {
                         Observation::Observed {
                             outcome: HealthOutcome::Healthy,
                             ..
-                        }
-                    ) == healthy,
+                        } => true,
+                        Observation::Observed {
+                            outcome: HealthOutcome::Degraded { issues },
+                            ..
+                        } => issues
+                            .iter()
+                            .all(|issue| issue.code == HealthIssueCode::UpdateAvailable),
+                        _ => false,
+                    } == healthy,
                     "only the exact routine release notice is excluded from service faults"
                 );
                 break;
@@ -1912,4 +2171,982 @@ async fn real_home_assistant_repairs_use_native_manager_health() {
         assert!(status.success());
         harness.close().await;
     }
+}
+fn native_download(series: bool) -> UpQueue {
+    UpQueue {
+        id: if series { 502 } else { 501 },
+        title: "Example.Release.2160p".into(),
+        movie: (!series).then(|| native_movie(7, 1)),
+        series: series.then(|| native_series(8)),
+        episode: series.then_some(UpQueueEpisode {
+            season_number: 2,
+            episode_number: 3,
+        }),
+        size: Some(1000.0),
+        sizeleft: Some(250.0),
+        status: "downloading".into(),
+        tracked_download_state: "downloading".into(),
+        tracked_download_status: "ok".into(),
+        quality: Some(UpDownloadQuality {
+            quality: UpQuality {
+                name: "Remux-2160p".into(),
+                resolution: Some(2160),
+                source: Some("bluray".into()),
+                modifier: Some("remux".into()),
+            },
+            revision: Some(UpRevision {
+                version: 2,
+                real: 0,
+                is_repack: true,
+            }),
+        }),
+        timeleft: Some("02:01:03".into()),
+        download_client: Some("Native downloader".into()),
+        indexer: Some("Example indexer".into()),
+        protocol: Some("usenet".into()),
+        languages: vec![UpNamed {
+            id: 1,
+            name: "English".into(),
+        }],
+        custom_formats: vec![UpNamed {
+            id: 7,
+            name: "Release format".into(),
+        }],
+        custom_format_score: Some(25),
+        added: Some("2026-11-07T10:00:00Z".into()),
+        estimated_completion_time: Some("2026-11-07T12:01:03Z".into()),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn library_details_use_existing_native_metadata_without_file_or_settings_requests() {
+    let harness = Harness::new().await;
+    {
+        let mut native = harness.native.state.lock().await;
+        let mut movie = native_movie(7, 1);
+        movie.has_file = true;
+        movie.movie_file_id = 9;
+        movie.metadata = UpMovieMetadata {
+            runtime: Some(77),
+            genres: vec!["Science Fiction".into()],
+            studio: Some("Example studio".into()),
+            certification: Some("PG-13".into()),
+            movie_file: Some(UpMovieFile {
+                quality: native_download(false).quality,
+                size: Some(12345),
+                media_info: Some(UpMediaInfo {
+                    video_codec: Some("HEVC".into()),
+                    audio_codec: Some("DTS-HD MA".into()),
+                    audio_channels: Some(5.1),
+                }),
+            }),
+        };
+        native.movie = Some(movie);
+        let mut series = native_series(8);
+        series.metadata = UpSeriesMetadata {
+            runtime: Some(42),
+            genres: vec!["Drama".into()],
+            network: Some("Example network".into()),
+            certification: Some("TV-14".into()),
+            next_airing: Some("2026-12-01T12:00:00Z".into()),
+        };
+        native.series = Some(series);
+    }
+    let movie = harness
+        .client
+        .get(format!("{}/api/v1/movies/14337", harness.url))
+        .bearer_auth(READER)
+        .send()
+        .await
+        .unwrap()
+        .json::<MediaItem>()
+        .await
+        .unwrap();
+    let MediaItem::Movie {
+        metadata: Some(metadata),
+        ..
+    } = movie
+    else {
+        panic!("movie metadata missing")
+    };
+    assert_eq!(metadata.runtime_minutes, Some(77));
+    assert_eq!(metadata.genres, vec!["Science Fiction"]);
+    assert_eq!(metadata.studio.as_deref(), Some("Example studio"));
+    let file = metadata.file.unwrap();
+    assert_eq!(file.quality.unwrap().name, "Remux-2160p");
+    assert_eq!(file.size_bytes, Some(12345));
+    assert_eq!(file.video_codec.as_deref(), Some("HEVC"));
+    assert_eq!(file.audio_codec.as_deref(), Some("DTS-HD MA"));
+    assert_eq!(file.audio_channels.as_deref(), Some("5.1"));
+    let series = harness
+        .client
+        .get(format!("{}/api/v1/series/78804", harness.url))
+        .bearer_auth(READER)
+        .send()
+        .await
+        .unwrap()
+        .json::<MediaItem>()
+        .await
+        .unwrap();
+    let MediaItem::Series {
+        metadata: Some(metadata),
+        ..
+    } = series
+    else {
+        panic!("series metadata missing")
+    };
+    assert_eq!(metadata.runtime_minutes, Some(42));
+    assert_eq!(metadata.network.as_deref(), Some("Example network"));
+    assert_eq!(
+        metadata.next_airing.as_deref(),
+        Some("2026-12-01T12:00:00Z")
+    );
+    assert!(
+        harness
+            .native
+            .state
+            .lock()
+            .await
+            .calls
+            .iter()
+            .all(|(method, path)| method == "GET"
+                && matches!(
+                    path.as_str(),
+                    "/api/v3/movie"
+                        | "/api/v3/series"
+                        | "/api/v3/qualityprofile"
+                        | "/api/v3/rootfolder"
+                        | "/api/v3/episode"
+                        | "/api/v3/queue"
+                ))
+    );
+    assert!(harness.service.store.snapshot().await.requests.is_empty());
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn prowlarr_availability_notices_require_the_matching_home_assistant_app_update() {
+    for (available, unrelated, expected) in [
+        (Some(false), false, false),
+        (Some(true), false, true),
+        (None, false, false),
+        (Some(true), true, false),
+    ] {
+        let mut harness = Harness::with_supervisor(true).await;
+        {
+            let mut native = harness.native.state.lock().await;
+            native.supervisor_update = available;
+            native.supervisor_unrelated = unrelated;
+            native.prowlarr_health = vec![UpHealth {
+                source: "UpdateCheck".into(),
+                severity: "warning".into(),
+                message: None,
+                wiki_url: "https://wiki.example.invalid/prowlarr#new-update-is-available".into(),
+            }];
+        }
+        harness.start_worker();
+        let health = wait_prowlarr(&harness).await;
+        if expected {
+            let HealthOutcome::Degraded { issues } = health else {
+                panic!("expected HA app update")
+            };
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].code, HealthIssueCode::UpdateAvailable);
+            assert_eq!(
+                issues[0].message,
+                "An update is available in Home Assistant."
+            );
+        } else {
+            assert!(matches!(health, HealthOutcome::Healthy));
+        }
+        assert!(
+            harness
+                .native
+                .state
+                .lock()
+                .await
+                .calls
+                .iter()
+                .all(|(method, _)| method == "GET")
+        );
+        harness.close().await;
+    }
+}
+
+async fn wait_prowlarr(harness: &Harness) -> HealthOutcome {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let component = harness
+                .client
+                .get(format!("{}/api/v1/health/components/prowlarr", harness.url))
+                .bearer_auth(READER)
+                .send()
+                .await
+                .unwrap()
+                .json::<ComponentHealth>()
+                .await
+                .unwrap();
+            if let Observation::Observed { outcome, .. } = component.observation {
+                return outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn prowlarr_update_filter_preserves_check_failures_indexers_connections_and_standalone_notices()
+ {
+    for unavailable in [false, true] {
+        let mut harness = Harness::with_supervisor(true).await;
+        {
+            let mut native = harness.native.state.lock().await;
+            native.supervisor_update = Some(false);
+            native.unavailable = unavailable;
+            native.prowlarr_health = vec![
+                UpHealth {
+                    source: "UpdateCheck".into(),
+                    severity: "error".into(),
+                    message: None,
+                    wiki_url: "https://wiki.example.invalid/prowlarr#update-check-failed".into(),
+                },
+                UpHealth {
+                    source: "IndexerStatusCheck".into(),
+                    severity: "error".into(),
+                    message: None,
+                    wiki_url: String::new(),
+                },
+            ];
+        }
+        harness.start_worker();
+        match wait_prowlarr(&harness).await {
+            HealthOutcome::Unavailable { .. } if unavailable => {}
+            HealthOutcome::Degraded { issues } if !unavailable => {
+                assert_eq!(issues.len(), 2);
+                assert!(
+                    issues
+                        .iter()
+                        .all(|issue| issue.severity == IssueSeverity::Error)
+                );
+                assert!(
+                    issues
+                        .iter()
+                        .any(|issue| issue.code == HealthIssueCode::IndexerUnavailable)
+                );
+                assert!(
+                    issues
+                        .iter()
+                        .all(|issue| issue.message != "An update is available.")
+                );
+            }
+            _ => panic!("native functional failure was hidden"),
+        }
+        harness.close().await;
+    }
+    let mut harness = Harness::new().await;
+    harness.native.state.lock().await.prowlarr_health = vec![UpHealth {
+        source: "UpdateCheck".into(),
+        severity: "warning".into(),
+        message: None,
+        wiki_url: "https://wiki.example.invalid/prowlarr#new-update-is-available".into(),
+    }];
+    harness.start_worker();
+    let HealthOutcome::Degraded { issues } = wait_prowlarr(&harness).await else {
+        panic!("standalone native notice missing")
+    };
+    assert_eq!(issues[0].message, "An update is available.");
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn download_details_read_real_release_metadata_without_settings_or_mutations() {
+    let harness = Harness::new().await;
+    {
+        let mut native = harness.native.state.lock().await;
+        native.movie_queue = vec![native_download(false)];
+        native.series_queue = vec![native_download(true)];
+    }
+    for (id, manager) in [
+        ("radarr:501", ManagerId::Radarr),
+        ("sonarr:502", ManagerId::Sonarr),
+    ] {
+        let response = harness
+            .client
+            .get(format!(
+                "{}/api/v1/queue/{}",
+                harness.url,
+                id.replace(':', "%3A")
+            ))
+            .bearer_auth(READER)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let details = response.json::<DownloadDetails>().await.unwrap();
+        assert_eq!(details.id.to_string(), id);
+        assert_eq!(details.manager, manager);
+        assert_eq!(details.status, DownloadStatus::Downloading);
+        assert_eq!(details.import_status, DownloadImportStatus::NotStarted);
+        let quality = details.quality.unwrap();
+        assert_eq!(quality.name, "Remux-2160p");
+        assert_eq!(quality.resolution, Some(2160));
+        assert_eq!(quality.source.as_deref(), Some("bluray"));
+        assert_eq!(quality.modifier.as_deref(), Some("remux"));
+        assert!(quality.revision.unwrap().is_repack);
+        let progress = details.progress.unwrap();
+        assert_eq!(
+            (
+                progress.completed_bytes,
+                progress.total_bytes,
+                progress.remaining_bytes
+            ),
+            (750, 1000, 250)
+        );
+        assert_eq!(details.remaining_seconds, Some(7263));
+        assert_eq!(details.protocol, Some(DownloadProtocol::Usenet));
+        assert_eq!(details.languages, vec!["English"]);
+        assert_eq!(details.custom_formats, vec!["Release format"]);
+        assert_eq!(details.custom_format_score, Some(25));
+        assert!(details.added_at.is_some() && details.estimated_completion_at.is_some());
+        assert!(details.warnings.is_empty());
+        assert_eq!(details.episode.is_some(), manager == ManagerId::Sonarr);
+    }
+    let queue = harness
+        .client
+        .get(format!("{}/api/v1/queue", harness.url))
+        .bearer_auth(READER)
+        .send()
+        .await
+        .unwrap()
+        .json::<Page<QueueItem>>()
+        .await
+        .unwrap();
+    assert_eq!(
+        queue
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["radarr:501", "sonarr:502"]
+    );
+    assert!(harness.service.store.snapshot().await.requests.is_empty());
+    assert!(
+        harness
+            .native
+            .state
+            .lock()
+            .await
+            .calls
+            .iter()
+            .all(|(method, path)| method == "GET"
+                && (path == "/api/v3/queue/details" || path == "/api/v3/queue"))
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn download_details_keep_unknowns_and_private_native_errors_out_of_public_values() {
+    let harness = Harness::new().await;
+    let mut record = native_download(false);
+    record.sizeleft = None;
+    record.quality = None;
+    record.timeleft = Some("unknown".into());
+    record.download_client = Some("https://private.invalid?apikey=fixture-secret".into());
+    record.indexer = Some("/private/provider/path".into());
+    record.protocol = Some("new-protocol".into());
+    record.tracked_download_state = "importBlocked".into();
+    record.tracked_download_status = "error".into();
+    record.status_messages = vec![UpDownloadMessage {
+        title: "Failure in /private/output".into(),
+        messages: vec!["apikey=fixture-secret".into()],
+    }];
+    record.error_message = Some("Bearer fixture-secret".into());
+    record.added = Some("2026-02-30T10:00:00Z".into());
+    harness.native.state.lock().await.movie_queue = vec![record];
+    let details = harness
+        .client
+        .get(format!("{}/api/v1/queue/radarr:501", harness.url))
+        .bearer_auth(READER)
+        .send()
+        .await
+        .unwrap()
+        .json::<DownloadDetails>()
+        .await
+        .unwrap();
+    assert!(
+        details.progress.is_none()
+            && details.quality.is_none()
+            && details.remaining_seconds.is_none()
+    );
+    assert!(
+        details.download_client.is_none()
+            && details.indexer.is_none()
+            && details.added_at.is_none()
+    );
+    assert_eq!(details.protocol, Some(DownloadProtocol::Unknown));
+    assert_eq!(details.import_status, DownloadImportStatus::Failed);
+    assert!(matches!(
+        details.acquisition,
+        Acquisition::Blocked {
+            reason: AcquisitionBlock::ImportFailed
+        }
+    ));
+    assert_eq!(details.warnings.len(), 1);
+    assert_eq!(details.warnings[0].code, DownloadWarningCode::ImportBlocked);
+    assert_eq!(
+        details.warnings[0].message,
+        "The download needs attention before it can be imported."
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn download_details_distinguish_invalid_gone_and_unavailable_without_journal_effects() {
+    let harness = Harness::new().await;
+    for id in [
+        "radarr:0",
+        "radarr:01",
+        "radarr:-1",
+        "radarr:2147483648",
+        "plex:1",
+        "radarr-1",
+    ] {
+        let response = harness
+            .client
+            .get(format!("{}/api/v1/queue/{id}", harness.url))
+            .bearer_auth(READER)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    assert!(harness.native.state.lock().await.calls.is_empty());
+    let url = format!("{}/api/v1/queue/radarr:501", harness.url);
+    assert_eq!(harness.client.get(&url).send().await.unwrap().status(), 401);
+    assert_eq!(
+        harness
+            .client
+            .get(&url)
+            .bearer_auth(READER)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    harness.native.state.lock().await.queue_unavailable = true;
+    assert_eq!(
+        harness
+            .client
+            .get(&url)
+            .bearer_auth(READER)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        503
+    );
+    {
+        let mut native = harness.native.state.lock().await;
+        native.queue_unavailable = false;
+        native.movie_queue = vec![native_download(false); 1001];
+    }
+    assert_eq!(
+        harness
+            .client
+            .get(&url)
+            .bearer_auth(READER)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        502
+    );
+    assert!(harness.service.store.snapshot().await.requests.is_empty());
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn native_blocked_and_failed_states_override_completed_transfer_status() {
+    let harness = Harness::new().await;
+    for (state, reason, warning, import) in [
+        (
+            "importBlocked",
+            AcquisitionBlock::ImportFailed,
+            DownloadWarningCode::ImportBlocked,
+            DownloadImportStatus::Failed,
+        ),
+        (
+            "failedPending",
+            AcquisitionBlock::DownloadFailed,
+            DownloadWarningCode::DownloadFailed,
+            DownloadImportStatus::Unknown,
+        ),
+        (
+            "failed",
+            AcquisitionBlock::DownloadFailed,
+            DownloadWarningCode::DownloadFailed,
+            DownloadImportStatus::Unknown,
+        ),
+    ] {
+        let mut record = native_download(false);
+        record.status = "completed".into();
+        record.tracked_download_status = "warning".into();
+        record.tracked_download_state = state.into();
+        harness.native.state.lock().await.movie_queue = vec![record];
+        let details = harness
+            .client
+            .get(format!("{}/api/v1/queue/radarr:501", harness.url))
+            .bearer_auth(READER)
+            .send()
+            .await
+            .unwrap()
+            .json::<DownloadDetails>()
+            .await
+            .unwrap();
+        assert!(
+            matches!(details.acquisition, Acquisition::Blocked { reason: actual } if actual == reason),
+            "wrong acquisition for {state}: {:?}",
+            details.acquisition
+        );
+        assert_eq!(details.import_status, import);
+        assert_eq!(details.warnings[0].code, warning);
+    }
+    harness.close().await;
+}
+
+fn native_import(series: bool) -> crate::media::imports::NativeImport {
+    use crate::media::imports::{NativeImport, NativeImportData, NativeImportEpisode};
+    NativeImport {
+        id: if series { 72 } else { 71 },
+        event_type: "downloadFolderImported".into(),
+        date: if series {
+            "2026-01-02T00:00:00Z"
+        } else {
+            "2026-01-01T00:00:00Z"
+        }
+        .into(),
+        quality: native_download(series).quality,
+        movie: (!series).then(|| native_movie(7, 1)),
+        series: series.then(|| native_series(8)),
+        episode: series.then_some(NativeImportEpisode {
+            season_number: 2,
+            episode_number: 3,
+            tvdb_id: Some(123456),
+        }),
+        data: NativeImportData {
+            imported_path: Some(
+                if series {
+                    "/media/series/Example.S02E03.mkv"
+                } else {
+                    "/media/movies/Example.mkv"
+                }
+                .into(),
+            ),
+            size: Some("12345".into()),
+        },
+    }
+}
+fn plex_import(series: bool) -> PlexFixtureMetadata {
+    PlexFixtureMetadata {
+        rating_key: "42".into(),
+        kind: if series { "episode" } else { "movie" }.into(),
+        guids: vec![PlexFixtureGuid {
+            id: if series {
+                "tvdb://123456"
+            } else {
+                "tmdb://14337"
+            }
+            .into(),
+        }],
+        updated_at: 1_767_312_060,
+        parent_index: series.then_some(2),
+        index: series.then_some(3),
+        media: vec![PlexFixtureMedia {
+            parts: vec![PlexFixturePart {
+                file: native_import(series).data.imported_path.unwrap(),
+                size: 12345,
+                exists: Some(true),
+                accessible: Some(true),
+                streams: Some(vec![
+                    PlexFixtureStream {
+                        stream_type: 1,
+                        language_code: None,
+                    },
+                    PlexFixtureStream {
+                        stream_type: 3,
+                        language_code: Some("eng".into()),
+                    },
+                ]),
+            }],
+        }],
+    }
+}
+async fn imports_page(harness: &Harness, query: &str) -> Page<ImportedItem> {
+    let response = harness
+        .client
+        .get(format!("{}/api/v1/imports{query}", harness.url))
+        .bearer_auth(READER)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    response.json::<Page<ImportedItem>>().await.unwrap()
+}
+#[tokio::test]
+async fn native_import_history_includes_external_work_and_pages_stable_ids_newest_first() {
+    let harness = Harness::new().await;
+    {
+        let mut native = harness.native.state.lock().await;
+        native.movie_imports = vec![native_import(false)];
+        native.series_imports = vec![native_import(true)];
+    }
+    let first = imports_page(&harness, "?limit=1").await;
+    assert_eq!(first.items.len(), 1);
+    assert_eq!(first.items[0].id.to_string(), "sonarr:72");
+    assert!(matches!(
+        first.items[0].plex,
+        PlexImportStatus::NotConfigured
+    ));
+    assert!(matches!(
+        first.items[0].subtitles,
+        SubtitleImportStatus::Unknown {
+            reason: SubtitleUnknownReason::PlexUnverified
+        }
+    ));
+    assert!(
+        first
+            .coverage
+            .iter()
+            .all(|source| source.state == CoverageState::Available)
+    );
+    let token = first.next_page.unwrap();
+    let second = imports_page(&harness, &format!("?limit=1&page_token={token}")).await;
+    assert_eq!(second.items[0].id.to_string(), "radarr:71");
+    assert_eq!(second.items[0].imported_at, "2026-01-01T00:00:00Z");
+    assert_eq!(
+        second.items[0].quality.as_ref().unwrap().name,
+        "Remux-2160p"
+    );
+    assert!(second.next_page.is_none());
+    assert!(harness.service.store.snapshot().await.requests.is_empty());
+    let native = harness.native.state.lock().await;
+    assert!(
+        native
+            .calls
+            .iter()
+            .all(|(method, path)| method == "GET" && path == "/api/v3/history")
+    );
+    assert!(native.queries.iter().all(|(_, query)| {
+        reqwest::Url::parse(&format!("http://example.invalid?{query}"))
+            .unwrap()
+            .query_pairs()
+            .any(|(key, value)| key == "eventType" && value == "3")
+    }));
+    drop(native);
+    harness.close().await;
+}
+#[tokio::test]
+async fn exact_imported_movie_and_episode_file_proof_verifies_plex_and_subtitles_read_only() {
+    for series in [false, true] {
+        let harness = Harness::with_plex(true).await;
+        {
+            let mut native = harness.native.state.lock().await;
+            if series {
+                native.series_imports = vec![native_import(true)];
+            } else {
+                native.movie_imports = vec![native_import(false)];
+            }
+            native.plex_status = 200;
+            native.plex_requires_key = true;
+            native.plex_metadata = vec![plex_import(series)];
+        }
+        let page = imports_page(&harness, "").await;
+        assert_eq!(page.items.len(), 1);
+        assert!(matches!(
+            page.items[0].plex,
+            PlexImportStatus::Verified { .. }
+        ));
+        assert!(
+            matches!(&page.items[0].subtitles, SubtitleImportStatus::Verified { languages, .. } if languages == &vec!["eng".to_string()])
+        );
+        assert!(harness.service.store.snapshot().await.requests.is_empty());
+        let native = harness.native.state.lock().await;
+        assert!(native.calls.iter().all(|(method, path)| method == "GET"
+            && (path == "/api/v3/history"
+                || path == "/library/sections"
+                || path == "/library/all"
+                || path == "/library/metadata/42")));
+        let query = native
+            .queries
+            .iter()
+            .find(|(path, _)| path == "/library/metadata/42")
+            .unwrap();
+        let pairs = reqwest::Url::parse(&format!("http://example.invalid?{}", query.1))
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(pairs.get("skipRefresh").map(String::as_str), Some("1"));
+        assert_eq!(
+            pairs.get("checkFileAvailability").map(String::as_str),
+            Some("1")
+        );
+        assert!(!pairs.contains_key("checkFiles"));
+        drop(native);
+        harness.close().await;
+    }
+}
+#[tokio::test]
+async fn completed_history_never_infers_current_plex_or_subtitle_readiness_from_a_title_match() {
+    enum Case {
+        WrongGuid,
+        WrongPath,
+        WrongSize,
+        Older,
+        FutureMetadata,
+        MissingExistence,
+        NoStreams,
+        NoSubtitles,
+        Authentication,
+        Connection,
+        NoEpisodeGuid,
+        NoFile,
+    }
+    for case in [
+        Case::WrongGuid,
+        Case::WrongPath,
+        Case::WrongSize,
+        Case::Older,
+        Case::FutureMetadata,
+        Case::MissingExistence,
+        Case::NoStreams,
+        Case::NoSubtitles,
+        Case::Authentication,
+        Case::Connection,
+        Case::NoEpisodeGuid,
+        Case::NoFile,
+    ] {
+        let series = matches!(case, Case::NoEpisodeGuid);
+        let harness = Harness::with_plex(!matches!(case, Case::Authentication)).await;
+        {
+            let mut native = harness.native.state.lock().await;
+            let mut imported = native_import(series);
+            let mut plex = plex_import(series);
+            native.plex_status = 200;
+            native.plex_requires_key = true;
+            match case {
+                Case::WrongGuid => plex.guids[0].id = "tmdb://999".into(),
+                Case::WrongPath => plex.media[0].parts[0].file = "/media/older-edition.mkv".into(),
+                Case::WrongSize => plex.media[0].parts[0].size = 1,
+                Case::Older => plex.updated_at = 1,
+                Case::FutureMetadata => plex.updated_at = crate::monitor::unix_ms() / 1000 + 86_400,
+                Case::MissingExistence => plex.media[0].parts[0].exists = None,
+                Case::NoStreams => plex.media[0].parts[0].streams = None,
+                Case::NoSubtitles => {
+                    plex.media[0].parts[0].streams = Some(vec![PlexFixtureStream {
+                        stream_type: 1,
+                        language_code: None,
+                    }])
+                }
+                Case::Authentication => {}
+                Case::Connection => native.plex_status = 503,
+                Case::NoEpisodeGuid => imported.episode.as_mut().unwrap().tvdb_id = None,
+                Case::NoFile => imported.data.imported_path = None,
+            }
+            if series {
+                native.series_imports = vec![imported];
+            } else {
+                native.movie_imports = vec![imported];
+            }
+            native.plex_metadata = vec![plex];
+        }
+        let page = imports_page(&harness, "").await;
+        assert_eq!(page.items.len(), 1);
+        let item = &page.items[0];
+        match case {
+            Case::NoStreams => {
+                assert!(matches!(item.plex, PlexImportStatus::Verified { .. }));
+                assert!(matches!(
+                    item.subtitles,
+                    SubtitleImportStatus::Unknown {
+                        reason: SubtitleUnknownReason::StreamsUnavailable
+                    }
+                ));
+            }
+            Case::NoSubtitles => {
+                assert!(matches!(item.plex, PlexImportStatus::Verified { .. }));
+                assert!(matches!(
+                    item.subtitles,
+                    SubtitleImportStatus::Missing { .. }
+                ));
+            }
+            Case::Authentication => assert!(matches!(
+                item.plex,
+                PlexImportStatus::Unavailable {
+                    reason: UnavailableReason::Authentication
+                }
+            )),
+            Case::Connection => assert!(matches!(
+                item.plex,
+                PlexImportStatus::Unavailable {
+                    reason: UnavailableReason::Connection
+                }
+            )),
+            Case::Older => assert!(matches!(
+                item.plex,
+                PlexImportStatus::Unknown {
+                    reason: ImportVerificationReason::OlderVersion
+                }
+            )),
+            Case::MissingExistence | Case::NoFile | Case::FutureMetadata => assert!(matches!(
+                item.plex,
+                PlexImportStatus::Unknown {
+                    reason: ImportVerificationReason::FileEvidenceMissing
+                }
+            )),
+            Case::NoEpisodeGuid => assert!(matches!(
+                item.plex,
+                PlexImportStatus::Unknown {
+                    reason: ImportVerificationReason::IdentityUnavailable
+                }
+            )),
+            _ => assert!(matches!(
+                item.plex,
+                PlexImportStatus::Unknown {
+                    reason: ImportVerificationReason::NotMatched
+                }
+            )),
+        }
+        if !matches!(case, Case::NoStreams | Case::NoSubtitles) {
+            assert!(matches!(
+                item.subtitles,
+                SubtitleImportStatus::Unknown {
+                    reason: SubtitleUnknownReason::PlexUnverified
+                }
+            ));
+        }
+        assert!(harness.service.store.snapshot().await.requests.is_empty());
+        harness.close().await;
+    }
+}
+#[tokio::test]
+async fn import_history_reports_truncation_and_retains_native_receipts_during_source_failure() {
+    let harness = Harness::new().await;
+    {
+        let mut native = harness.native.state.lock().await;
+        native.movie_imports = vec![native_import(false)];
+        native.movie_import_total = Some(2001);
+    }
+    let before = imports_page(&harness, "").await;
+    assert_eq!(before.items.len(), 1);
+    assert_eq!(before.coverage[0].state, CoverageState::Partial);
+    harness.native.state.lock().await.history_unavailable = true;
+    let after = imports_page(&harness, "").await;
+    assert_eq!(after.items[0].id, before.items[0].id);
+    assert_eq!(
+        after.items[0].observed_at_unix_ms,
+        before.items[0].observed_at_unix_ms
+    );
+    assert!(
+        after
+            .coverage
+            .iter()
+            .all(|source| source.state == CoverageState::Unavailable)
+    );
+    harness.close().await;
+    let harness = Harness::new().await;
+    {
+        let mut native = harness.native.state.lock().await;
+        let mut transfer = native_download(false);
+        transfer.status = "completed".into();
+        native.movie_queue = vec![transfer];
+        let mut grabbed = native_import(false);
+        grabbed.event_type = "grabbed".into();
+        native.movie_imports = vec![grabbed];
+    }
+    let unproven = imports_page(&harness, "").await;
+    assert!(unproven.items.is_empty());
+    assert_eq!(unproven.coverage[0].state, CoverageState::Partial);
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn imports_since_filters_before_paging_and_plex_and_binds_validated_utc_cursors() {
+    let harness = Harness::with_plex(true).await;
+    {
+        let mut native = harness.native.state.lock().await;
+        native.movie_imports = vec![native_import(false)];
+        native.series_imports = vec![native_import(true)];
+        native.plex_status = 200;
+        native.plex_requires_key = true;
+        native.plex_metadata = vec![plex_import(true)];
+    }
+    let recent = imports_page(&harness, "?since=2026-01-02T00:00:00Z&limit=1").await;
+    assert_eq!(recent.items.len(), 1);
+    assert_eq!(recent.items[0].id.to_string(), "sonarr:72");
+    assert!(recent.next_page.is_none());
+    {
+        let mut native = harness.native.state.lock().await;
+        assert!(
+            native
+                .queries
+                .iter()
+                .filter(|(path, _)| path == "/library/all")
+                .all(|(_, query)| !query.contains("14337"))
+        );
+        native.calls.clear();
+        native.queries.clear();
+    }
+    let future = imports_page(&harness, "?since=9999-12-31T23:59:59Z").await;
+    assert!(future.items.is_empty());
+    assert!(
+        harness
+            .native
+            .state
+            .lock()
+            .await
+            .calls
+            .iter()
+            .all(|(_, path)| path == "/api/v3/history")
+    );
+    harness.native.state.lock().await.calls.clear();
+    for since in [
+        "tomorrow",
+        "2026-01-02",
+        "2026-01-02T01:00:00+01:00",
+        "2026-02-30T00:00:00Z",
+        "2026-+1-01T00:00:00Z",
+    ] {
+        let response = harness
+            .client
+            .get(format!("{}/api/v1/imports", harness.url))
+            .query(&[("since", since)])
+            .bearer_auth(READER)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    assert!(harness.native.state.lock().await.calls.is_empty());
+    let all = imports_page(&harness, "?limit=1").await;
+    let cursor = all.next_page.unwrap();
+    harness.native.state.lock().await.calls.clear();
+    let mismatch = harness
+        .client
+        .get(format!("{}/api/v1/imports", harness.url))
+        .query(&[
+            ("page_token", cursor.as_str()),
+            ("since", "2026-01-01T00:00:00Z"),
+        ])
+        .bearer_auth(READER)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status(), 400);
+    assert!(harness.native.state.lock().await.calls.is_empty());
+    harness.close().await;
 }

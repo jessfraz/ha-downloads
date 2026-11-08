@@ -57,6 +57,7 @@ async def test_native_tools_and_real_provider_schema_conversion(
         "downloads__search",
         "downloads__request",
         "downloads__status",
+        "downloads__imports",
     }
     for tool in tools:
         schema = probatio.to_openapi(
@@ -272,6 +273,7 @@ async def test_hidden_and_disabled_request_tools_are_not_discovered(
     assert {tool.name for tool in read_only.tools if tool.integration == DOMAIN} == {
         "downloads__search",
         "downloads__status",
+        "downloads__imports",
     }
 
 

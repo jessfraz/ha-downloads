@@ -511,6 +511,45 @@ async fn endpoint_queue(
         .await
         .map_err(error)?))
 }
+#[derive(Deserialize, JsonSchema)]
+struct QueuePath {
+    id: QueueId,
+}
+#[endpoint{method=GET,path="/api/v1/imports",tags=["media"]}]
+async fn endpoint_imports(
+    r: RequestContext<Arc<Context>>,
+    q: Query<ImportParams>,
+) -> Result<ApiOk<Page<ImportedItem>>, HttpError> {
+    authorize(&r, false, false, false)?;
+    let q = q.into_inner();
+    Paging {
+        limit: q.limit,
+        page_token: q.page_token.clone(),
+    }
+    .validate()?;
+    Ok(ok(service(&r)?
+        .imports(q.limit, q.page_token.as_deref(), q.since.as_deref())
+        .await
+        .map_err(error)?))
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ImportParams {
+    limit: Option<u32>,
+    page_token: Option<String>,
+    since: Option<String>,
+}
+#[endpoint{method=GET,path="/api/v1/queue/{id}",tags=["media"]}]
+async fn endpoint_download_details(
+    r: RequestContext<Arc<Context>>,
+    p: Path<QueuePath>,
+) -> Result<ApiOk<DownloadDetails>, HttpError> {
+    authorize(&r, false, false, false)?;
+    Ok(ok(service(&r)?
+        .download_details(p.into_inner().id)
+        .await
+        .map_err(error)?))
+}
 #[endpoint{method=GET,path="/api/v1/requests",tags=["media"]}]
 async fn endpoint_requests(
     r: RequestContext<Arc<Context>>,
@@ -608,6 +647,8 @@ pub fn register(api: &mut ApiDescription<Arc<Context>>) -> anyhow::Result<()> {
     api.register(endpoint_series)?;
     api.register(endpoint_episodes)?;
     api.register(endpoint_queue)?;
+    api.register(endpoint_download_details)?;
+    api.register(endpoint_imports)?;
     api.register(endpoint_requests)?;
     api.register(endpoint_request_by_key)?;
     api.register(endpoint_request)?;

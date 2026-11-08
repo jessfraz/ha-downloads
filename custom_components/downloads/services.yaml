@@ -32,3 +32,15 @@ status:
       required: true
       selector:
         object:
+imports:
+  fields:
+    limit:
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 20
+          mode: box
+    page_token:
+      selector:
+        text:

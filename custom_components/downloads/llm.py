@@ -31,9 +31,11 @@ from .health import (
 from .models import request_document
 from .native_health import NativeHealthCoordinator
 from .operations import (
+    IMPORTS_SCHEMA,
     REQUEST_DOCUMENT_SCHEMA,
     SEARCH_SCHEMA,
     STATUS_SCHEMA,
+    async_imports,
     async_request,
     async_search,
     async_status,
@@ -44,6 +46,7 @@ class ToolOperation(StrEnum):
     SEARCH = "search"
     REQUEST = "request"
     STATUS = "status"
+    IMPORTS = "imports"
 
 
 @callback
@@ -56,6 +59,7 @@ def _media_tools(hass: HomeAssistant, llm_context: LLMContext, api_id: str) -> l
     tools: list[Tool] = [
         DownloadsTool(entry, ToolOperation.SEARCH),
         DownloadsTool(entry, ToolOperation.STATUS),
+        DownloadsTool(entry, ToolOperation.IMPORTS),
     ]
     if entry.options.get(CONF_ALLOW_REQUESTS, False):
         tools.append(DownloadsTool(entry, ToolOperation.REQUEST))
@@ -72,6 +76,9 @@ def _media_tools(hass: HomeAssistant, llm_context: LLMContext, api_id: str) -> l
             "configured in Radarr for movies or Sonarr for TV; never invent or select settings. "
             "Request applied is not downloaded or playable. "
             "Use downloads__status for its actual state. Report unavailable sources and "
+            "use downloads__imports for recent native imports and their separate Plex and "
+            "subtitle evidence, including downloads started directly in Radarr or Sonarr. "
+            "Imported is not proof of Plex or subtitle readiness. Treat "
             "partial coverage honestly. No tool can delete media, change settings, force "
             "releases, or control VPN, power, or access."
             " For uncertain requests, check status with the returned idempotency_key. "
@@ -125,6 +132,7 @@ class DownloadsTool(Tool):
             "search": "Find movies and TV shows",
             "request": "Request media",
             "status": "Check media status",
+            "imports": "Read recent media imports",
         }[operation]
         self.description = {
             "search": (
@@ -139,12 +147,19 @@ class DownloadsTool(Tool):
                 "Read a request, original idempotency key, movie or TV show's current state. "
                 "Applied requests are not necessarily downloaded or playable."
             ),
+            "imports": (
+                "Read recent completed native imports from Radarr and Sonarr, including "
+                "titles requested elsewhere. Report Plex and subtitles only as verified "
+                "when their separate evidence says so; this does not test playback."
+            ),
         }[operation]
         self.parameters = (
             SEARCH_SCHEMA
             if operation == "search"
             else STATUS_SCHEMA
             if operation == "status"
+            else IMPORTS_SCHEMA
+            if operation == "imports"
             else vol.Schema({vol.Required("request"): REQUEST_DOCUMENT_SCHEMA})
         )
         self.annotations = ToolAnnotations(
@@ -174,6 +189,8 @@ class DownloadsTool(Tool):
                 data = await async_search(guard, values)
             elif self.operation == "status":
                 data = await async_status(guard, values)
+            elif self.operation == "imports":
+                data = await async_imports(guard, values)
             else:
                 actor = await guard.check()
                 context_id = (

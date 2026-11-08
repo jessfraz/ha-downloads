@@ -1,9 +1,11 @@
 use ha_downloads::media::model::{
     Acquisition, ApiErrorCode, Capabilities, Component, ComponentHealth, CoverageState,
-    CreateRequest, CredentialRole, Freshness, HealthIssueCode, HealthOutcome, HealthSnapshot,
-    LibraryState, ManagerList, MediaItem, MovieIntent, Observation, Operation, OperationReadiness,
-    Page, ReadinessState, RequestAvailability, RequestId, RequestRecord, SourceCoverage,
-    Submission, SystemResponse, Transport,
+    CreateRequest, CredentialRole, DownloadDetails, DownloadImportStatus, DownloadProtocol,
+    DownloadStatus, Freshness, HealthIssueCode, HealthOutcome, HealthSnapshot, ImportedItem,
+    LibraryState, ManagerId, ManagerList, MediaIdentity, MediaItem, MovieIntent, Observation,
+    Operation, OperationReadiness, Page, PlexImportStatus, ReadinessState, RequestAvailability,
+    RequestId, RequestRecord, SourceCoverage, Submission, SubtitleImportStatus,
+    SubtitleUnknownReason, SystemResponse, Transport,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -234,6 +236,7 @@ fn movie() -> MediaItem {
         library: LibraryState::NotAdded,
         acquisition: Acquisition::NotRequested,
         request: RequestAvailability::Ready,
+        metadata: None,
     }
 }
 
@@ -248,6 +251,7 @@ fn series() -> MediaItem {
         acquisition: Acquisition::NotRequested,
         request: RequestAvailability::Ready,
         seasons: vec![],
+        metadata: None,
     }
 }
 
@@ -813,6 +817,139 @@ fn remaining_read_commands_use_the_documented_single_request_routes() {
         },
         "/api/v1/health/stack",
     );
+}
+
+#[test]
+fn queue_details_preserve_typed_observations_in_both_transports() {
+    let body = DownloadDetails {
+        id: "radarr:12".parse().unwrap(),
+        manager: ManagerId::Radarr,
+        media: MediaIdentity::Movie {
+            tmdb_id: 14337.try_into().unwrap(),
+        },
+        title: "Example.Release.2160p".into(),
+        episode: None,
+        acquisition: Acquisition::Waiting,
+        status: DownloadStatus::Queued,
+        quality: None,
+        progress: None,
+        remaining_seconds: None,
+        download_client: Some("SABnzbd".into()),
+        indexer: None,
+        protocol: Some(DownloadProtocol::Usenet),
+        import_status: DownloadImportStatus::NotStarted,
+        warnings: vec![],
+        languages: vec!["English".into()],
+        custom_formats: vec![],
+        custom_format_score: None,
+        added_at: Some("2026-11-07T20:00:00Z".into()),
+        estimated_completion_at: None,
+        observed_at_unix_ms: 100,
+    };
+    for ha in [false, true] {
+        let fixture = Fixture::json(200, &body);
+        let output = if ha {
+            cli()
+                .env("HOME_ASSISTANT_URL", &fixture.origin)
+                .env("HOME_ASSISTANT_TOKEN", "ha-fixture-token")
+                .args(["--transport", "home-assistant", "queue", "get", "radarr:12"])
+                .output()
+                .unwrap()
+        } else {
+            native(&fixture, &["queue", "get", "radarr:12"])
+        };
+        let result = success::<DownloadDetails>(&output);
+        assert_eq!(result.body.id, body.id);
+        assert_eq!(result.body.status, DownloadStatus::Queued);
+        assert_eq!(result.body.languages, ["English"]);
+        let calls = fixture.captured();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "GET");
+        assert_eq!(
+            calls[0].target,
+            if ha {
+                "/api/downloads/v1/queue/radarr:12"
+            } else {
+                "/api/v1/queue/radarr:12"
+            }
+        );
+    }
+    let fixture = Fixture::json(200, &body);
+    for id in [
+        "radarr:0",
+        "sonarr:01",
+        "radarr:+1",
+        "prowlarr:12",
+        "radarr:2147483648",
+        "radarr:12/stop",
+    ] {
+        let output = native(&fixture, &["queue", "get", id]);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+    assert!(fixture.captured().is_empty());
+}
+
+#[test]
+fn native_imports_are_typed_paginated_reads_with_strict_since_dates() {
+    let body = Page {
+        items: vec![ImportedItem {
+            id: "radarr:31".parse().unwrap(),
+            manager: ManagerId::Radarr,
+            media: MediaIdentity::Movie {
+                tmdb_id: 14337.try_into().unwrap(),
+            },
+            title: "Example import".into(),
+            episode: None,
+            imported_at: "2026-11-07T20:00:00Z".into(),
+            quality: None,
+            plex: PlexImportStatus::NotConfigured,
+            subtitles: SubtitleImportStatus::Unknown {
+                reason: SubtitleUnknownReason::PlexUnverified,
+            },
+            observed_at_unix_ms: 100,
+        }],
+        next_page: Some("scoped-next-page".into()),
+        coverage: vec![],
+    };
+    let fixture = Fixture::json(200, &body);
+    let output = native(
+        &fixture,
+        &[
+            "imports",
+            "list",
+            "--since",
+            "2026-11-07T19:00:00Z",
+            "--limit",
+            "3",
+        ],
+    );
+    let result = success::<Page<ImportedItem>>(&output);
+    assert_eq!(result.body.items[0].id.to_string(), "radarr:31");
+    assert_eq!(result.body.next_page.as_deref(), Some("scoped-next-page"));
+    let calls = fixture.captured();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].method, "GET");
+    let url = reqwest::Url::parse(&format!("{}{}", fixture.origin, calls[0].target)).unwrap();
+    assert_eq!(url.path(), "/api/v1/imports");
+    let query = url.query_pairs().into_owned().collect::<BTreeMap<_, _>>();
+    assert_eq!(query.get("since").unwrap(), "2026-11-07T19:00:00Z");
+    assert_eq!(query.get("limit").unwrap(), "3");
+    drop(calls);
+    for since in [
+        "not-time",
+        "2025-02-29T00:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "2026-01-01T00:00:00+01:00",
+        "2026-+1-01T00:00:00Z",
+    ] {
+        assert!(
+            !native(&fixture, &["imports", "list", "--since", since])
+                .status
+                .success()
+        );
+    }
+    assert_eq!(fixture.captured().len(), 1);
 }
 
 #[test]
