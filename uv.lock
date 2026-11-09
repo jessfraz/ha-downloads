@@ -390,7 +390,7 @@ requires-dist = [
     { name = "idna", specifier = "==3.20" },
     { name = "jaraco-classes", specifier = "==3.4.0" },
     { name = "jaraco-collections", specifier = "==5.2.1" },
-    { name = "jaraco-context", specifier = "==4.3.0" },
+    { name = "jaraco-context", specifier = "==6.1.2" },
     { name = "jaraco-functools", specifier = "==4.6.0" },
     { name = "jaraco-text", specifier = "==4.3.0" },
     { name = "markdown", specifier = "==3.11.2" },
@@ -470,11 +470,11 @@ wheels = [
 
 [[package]]
 name = "jaraco-context"
-version = "4.3.0"
+version = "6.1.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7c/b4/fa71f82b83ebeed95fe45ce587d6cba85b7c09ef3d9f61602f92f45e90db/jaraco.context-4.3.0.tar.gz", hash = "sha256:4dad2404540b936a20acedec53355bdaea223acb88fd329fa6de9261c941566e", size = 9764, upload-time = "2023-01-19T15:35:31.797Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/50/4763cd07e722bb6285316d390a164bc7e479db9d90daa769f22578f698b4/jaraco_context-6.1.2.tar.gz", hash = "sha256:f1a6c9d391e661cc5b8d39861ff077a7dc24dc23833ccee564b234b81c82dfe3", size = 16801, upload-time = "2026-03-20T22:13:33.922Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/de/3f889cd55e69f0a91b396f6799ca31ea0d6869cde338e7c79335699090cb/jaraco.context-4.3.0-py3-none-any.whl", hash = "sha256:5d9e95ca0faa78943ed66f6bc658dd637430f16125d86988e77844c741ff2f11", size = 5310, upload-time = "2023-01-19T15:35:30.254Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/58/bc8954bda5fcda97bd7c19be11b85f91973d67a706ed4a3aec33e7de22db/jaraco_context-6.1.2-py3-none-any.whl", hash = "sha256:bf8150b79a2d5d91ae48629d8b427a8f7ba0e1097dd6202a9059f29a36379535", size = 7871, upload-time = "2026-03-20T22:13:32.808Z" },
 ]
 
 [[package]]
