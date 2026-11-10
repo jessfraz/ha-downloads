@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from contextlib import suppress
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from enum import StrEnum
 from ipaddress import ip_address
@@ -20,6 +21,8 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.json import JsonObjectType
 
+from ._app_kit.repairs import VersionRepairs
+from ._app_kit.versions import ReleaseVersion
 from .const import (
     APP_URL,
     CONF_ADDON_SLUG,
@@ -56,6 +59,7 @@ class HealthData:
     checked_at_unix_ms: int | None
     age_ms: int | None
     received_at: float = field(default_factory=monotonic)
+    app_version: str | None = None
 
     @classmethod
     def parse(cls, value: object) -> Self:
@@ -124,6 +128,7 @@ class NativeHealthCoordinator(DataUpdateCoordinator[HealthData]):
         )
         self.slug: str = entry.data[CONF_ADDON_SLUG]
         self.entry = entry
+        self.version_repairs: VersionRepairs | None = None
         self._cancel_expiry: Callable[[], None] | None = None
 
     async def async_shutdown(self) -> None:
@@ -183,6 +188,9 @@ class NativeHealthCoordinator(DataUpdateCoordinator[HealthData]):
             raise
         if not self._shutdown_requested:
             self._schedule_expiry(data)
+            if self.version_repairs is not None:
+                with suppress(ValueError):
+                    self.version_repairs.async_report(ReleaseVersion.parse(data.app_version))
         return data
 
 
@@ -221,6 +229,6 @@ async def async_fetch_health(hass: HomeAssistant, slug: str) -> HealthData:
                 data = HealthData.parse(json.loads(body))
                 if response.status == 503 and data.ready:
                     raise UpdateFailed("Downloads returned inconsistent health.")
-                return data
+                return replace(data, app_version=app.version)
     except SupervisorError, ClientError, TimeoutError, ValueError, TypeError:
         raise UpdateFailed("Downloads health could not be verified.") from None

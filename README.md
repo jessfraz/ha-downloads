@@ -126,6 +126,9 @@ just container
 just network
 ```
 
+Build `downloads.zip` with `just integration-zip`. Attach the ZIP from
+`work/` before publishing the release.
+
 Rust 1.99.1, cargo, just, uv, actionlint, ShellCheck, and the Docker CLI are in
 the development shell. Docker needs a running Linux daemon with TUN support.
 The network suite uses disposable local fixtures and no real VPN credentials.

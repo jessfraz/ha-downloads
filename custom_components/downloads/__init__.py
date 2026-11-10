@@ -7,13 +7,14 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
+from ._app_kit.repairs import VersionRepairs
 from .client import DownloadsClient
 from .const import CONF_ADDON_SLUG, CONF_BACKEND_URL, CONF_TOKEN, DOMAIN
 from .coordinator import DownloadsCoordinator
 from .http import DownloadsHealthView, DownloadsView
 from .imports import async_setup_import_notifications
 from .native_health import NativeHealthCoordinator
-from .repairs import async_remove
+from .repairs import VERSION_REPAIR, async_remove
 from .services import async_register_services
 
 type DownloadsConfigEntry = ConfigEntry[DownloadsCoordinator | NativeHealthCoordinator]
@@ -69,6 +70,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: DownloadsConfigEntry) ->
             return False
         entry.runtime_data = native_health
         platforms = HEALTH_PLATFORMS
+    version_repairs = VersionRepairs(hass, entry, VERSION_REPAIR)
+    entry.runtime_data.version_repairs = version_repairs
+    version_repairs.async_start()
     await hass.config_entries.async_forward_entry_setups(entry, platforms)
     # Repairs are entry-owned coordinator consumers, independent of entity
     # enablement. Their listeners also receive the existing local expiry events.

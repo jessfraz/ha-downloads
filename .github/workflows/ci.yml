@@ -25,6 +25,11 @@ jobs:
       - run: rustup toolchain install 1.99.1 --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --locked --bin ha-downloads
+      - name: Install the built Marketplace integration
+        run: |
+          uv run --project integration --frozen python scripts/build-integration --output "$RUNNER_TEMP/marketplace"
+          mv custom_components/downloads "$RUNNER_TEMP/downloads-source"
+          uv run --project integration --frozen python -m zipfile -e "$RUNNER_TEMP/marketplace/downloads.zip" custom_components/downloads
       - run: uv run --project integration --frozen pytest -q -c integration/pyproject.toml tests_ha
       - run: uv run --project integration --frozen ruff check --config integration/pyproject.toml custom_components/downloads tests_ha
       - run: uv run --project integration --frozen ruff format --check --config integration/pyproject.toml custom_components/downloads tests_ha

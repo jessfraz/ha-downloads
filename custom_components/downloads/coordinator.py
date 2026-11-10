@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import timedelta
 
 from aiohttp import ClientError
@@ -12,6 +13,8 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from ._app_kit.repairs import VersionRepairs
+from ._app_kit.versions import ReleaseVersion
 from .client import Actor, DownloadsClient, ResponseTooLarge
 from .const import API_PREFIX, DOMAIN
 from .imports import ImportNotifications
@@ -48,6 +51,7 @@ class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
         self.entry = entry
         self.native_health = native_health
         self.system: System | None = None
+        self.version_repairs: VersionRepairs | None = None
         self.import_notifications: ImportNotifications | None = None
         self._cancel_expiry: Callable[[], None] | None = None
         entry.async_on_unload(self.async_cancel_expiry)
@@ -90,16 +94,20 @@ class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
             self.async_update_listeners()
             self._schedule_expiry(self.data)
 
+    async def async_read_system(self) -> System:
+        response = await self.client.request("GET", f"{API_PREFIX}/system")
+        if response.status in {401, 403}:
+            raise ConfigEntryAuthFailed("The Downloads credential was rejected")
+        if response.status != 200:
+            raise UpdateFailed("Cannot read Downloads capabilities")
+        system = System.parse(response.json())
+        if system.role != "integration" or not system.read or system.admin:
+            raise ConfigEntryAuthFailed("A dedicated Downloads integration token is required")
+        return system
+
     async def _async_update_data(self) -> HealthSnapshot:
         try:
-            system_response = await self.client.request("GET", f"{API_PREFIX}/system")
-            if system_response.status in {401, 403}:
-                raise ConfigEntryAuthFailed("The Downloads credential was rejected")
-            if system_response.status != 200:
-                raise UpdateFailed("Cannot read Downloads capabilities")
-            system = System.parse(system_response.json())
-            if system.role != "integration" or not system.read or system.admin:
-                raise ConfigEntryAuthFailed("A dedicated Downloads integration token is required")
+            system = await self.async_read_system()
             response = await self.client.request(
                 "GET", f"{API_PREFIX}/health/stack", actor=Actor("integration")
             )
@@ -129,4 +137,7 @@ class DownloadsCoordinator(DataUpdateCoordinator[HealthSnapshot]):
         if not self._shutdown_requested:
             self.system = system
             self._schedule_expiry(data)
+            if self.version_repairs is not None:
+                with suppress(ValueError):
+                    self.version_repairs.async_report(ReleaseVersion.parse(system.version))
         return data

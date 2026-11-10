@@ -22,3 +22,5 @@ credentials.json
 *.log
 *.db
 *.sqlite*
+
+/custom_components/downloads/_app_kit/
