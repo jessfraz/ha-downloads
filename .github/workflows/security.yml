@@ -10,6 +10,7 @@ permissions:
   contents: read
 jobs:
   python-dependencies:
+    name: Python dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -22,6 +23,7 @@ jobs:
           python-version: "3.12"
       - run: uv audit --locked --python-version 3.12 --python-platform linux
   dependencies:
+    name: Rust dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -33,6 +35,7 @@ jobs:
           command: check advisories licenses sources
           arguments: --config .github/deny.toml
   codeql:
+    name: CodeQL (${{ matrix.language }})
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 20

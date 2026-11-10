@@ -1,3 +1,8 @@
+# 0.4.1
+
+- Enforce the same repository checks and release validation as the other apps.
+- Publish tested CLI archives for Linux and Apple Silicon alongside the app.
+
 # 0.4.0
 
 - Keep title and download details in a modal over the originating tab, with
