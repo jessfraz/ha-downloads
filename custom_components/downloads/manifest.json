@@ -1,6 +1,9 @@
 {
   "domain": "downloads",
   "name": "Downloads",
+  "after_dependencies": [
+    "hassio"
+  ],
   "codeowners": [
     "@jessfraz"
   ],
@@ -14,8 +17,5 @@
   "iot_class": "local_polling",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.4.1",
-  "after_dependencies": [
-    "hassio"
-  ]
+  "version": "0.4.1"
 }
