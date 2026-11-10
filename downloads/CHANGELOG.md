@@ -1,3 +1,7 @@
+# 0.4.3
+
+- Fix select spacing and let Dependabot track App Kit releases.
+
 # 0.4.2
 
 - Share the app shell and controls with HA App Kit while keeping Home Assistant
