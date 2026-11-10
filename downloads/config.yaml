@@ -1,5 +1,5 @@
 name: Downloads
-version: "0.4.4"
+version: "0.4.5"
 slug: downloads
 description: Movies and TV with saved Radarr/Sonarr settings and VPN-protected downloads
 url: https://github.com/jessfraz/ha-downloads
@@ -7,7 +7,6 @@ arch: [amd64, aarch64]
 image: ghcr.io/jessfraz/ha-downloads
 startup: application
 boot: auto
-stage: experimental
 init: false
 timeout: 30
 backup: cold
