@@ -40,7 +40,10 @@
             ./tests
           ];
         };
-        cargoLock.lockFile = ./Cargo.lock;
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+          outputHashes."ha-app-ui-0.1.1" = "sha256-+dmnGRq9mQH3fiIFK6jNo9xfVDCVGDQ11kN8AxweeaI=";
+        };
         cargoBuildFlags = ["--bin" "ha-downloads"];
         cargoTestFlags = ["--test" "cli" "--test" "cli_client"];
         __darwinAllowLocalNetworking = true;

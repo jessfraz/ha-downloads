@@ -181,8 +181,12 @@ test("mobile detail modal, theme, keyboard tabs, and true imported labels remain
   await page.getByRole("heading", { name: "Your library" }).waitFor();
   await page.setViewportSize({ width: 320, height: 850 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.setViewportSize({ width: 1100, height: 900 }); await page.getByRole("tab", { name: "Search", exact: true }).click();
-  await page.getByRole("button", { name: "Primer, 2004, movie" }).click(); await capture(page, "downloads-media-desktop-dark.png");
-  await page.emulateMedia({ colorScheme: "light" }); await capture(page, "downloads-media-desktop-light.png");
+  await page.getByRole("button", { name: "Primer, 2004, movie" }).click();
+  await page.getByRole("button", { name: "Request movie", exact: true }).waitFor();
+  await capture(page, "downloads-media-desktop-dark.png");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForFunction(() => getComputedStyle(document.getElementById("request-media")).color === "rgb(0, 0, 0)");
+  await capture(page, "downloads-media-desktop-light.png");
   assert.deepEqual(fixture.errors, []);
 });
 test("requester and read-only accounts have no parent-app settings or embedded downloader", async (t) => {

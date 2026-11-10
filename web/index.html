@@ -6,8 +6,9 @@
     <meta name="color-scheme" content="light dark">
     <title>Downloads</title>
     <base href="__DOWNLOADS_BASE__">
+    <link rel="stylesheet" href="app-kit.css">
     <link rel="stylesheet" href="style.css">
-    <script src="app.js" defer></script>
+    <script src="app.js" type="module"></script>
   </head>
   <body>
     <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -48,7 +49,7 @@
     </svg>
 
     <header class="app-header">
-        <h1><a class="wordmark" href="./" aria-label="Downloads home"><svg class="icon" width="30" height="30" aria-hidden="true"><use href="#icon-download"/></svg>Downloads</a></h1>
+        <span id="app-brand" hidden><svg class="icon" width="30" height="30" aria-hidden="true"><use href="#icon-download"/></svg></span>
         <div class="refresh-controls">
           <span id="last-checked" class="last-checked">Connecting…</span>
           <button id="refresh" class="icon-button" type="button" aria-label="Refresh status" title="Refresh status">
@@ -58,6 +59,7 @@
     </header>
 
     <main class="shell">
+      <h1 class="visually-hidden">Downloads</h1>
       <nav class="media-nav" aria-label="Downloads">
         <div class="media-tabs" role="tablist" aria-label="Media views">
           <button class="media-tab" type="button" role="tab" id="search-tab" aria-selected="true" aria-controls="search-panel" data-view="search">Search</button>
@@ -193,11 +195,8 @@
       </dialog>
 
       <noscript><p class="noscript surface">Enable JavaScript to browse media and check the connection.</p></noscript>
+      <p class="media-muted scope-note">Applies only to this app. Other Home Assistant apps keep their network settings.</p>
     </main>
-    <footer class="app-footer">
-      <p>Downloads <span id="app-version" class="app-version" hidden></span></p>
-      <p>Applies only to this app. Other Home Assistant apps keep their network settings.</p>
-      <a class="source-link" href="https://github.com/jessfraz/ha-downloads" target="_blank" rel="noopener noreferrer">Source code <span aria-hidden="true">↗</span></a>
-    </footer>
+    <footer class="app-footer" id="app-footer"></footer>
   </body>
 </html>

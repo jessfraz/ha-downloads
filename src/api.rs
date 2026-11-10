@@ -212,6 +212,24 @@ async fn javascript(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, H
         "text/javascript; charset=utf-8",
     )
 }
+#[endpoint {method=GET,path="/app-kit.js",tags=["web"]}]
+async fn kit_script(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
+    web_access(&r)?;
+    content(ha_app_ui::SCRIPT.into(), "text/javascript; charset=utf-8")
+}
+#[endpoint {method=GET,path="/app-kit.css",tags=["web"]}]
+async fn kit_style(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
+    web_access(&r)?;
+    content(ha_app_ui::STYLESHEET.into(), "text/css; charset=utf-8")
+}
+#[endpoint {method=GET,path="/shell.js",tags=["web"]}]
+async fn shell_script(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
+    web_access(&r)?;
+    content(
+        include_str!("../web/shell.js").into(),
+        "text/javascript; charset=utf-8",
+    )
+}
 #[endpoint {method=GET,path="/style.css",tags=["web"]}]
 async fn stylesheet(r: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
     web_access(&r)?;
@@ -490,6 +508,9 @@ pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     api.register(readiness)?;
     api.register(index)?;
     api.register(javascript)?;
+    api.register(kit_script)?;
+    api.register(kit_style)?;
+    api.register(shell_script)?;
     api.register(stylesheet)?;
     api.register(downloader_root)?;
     api.register(get)?;

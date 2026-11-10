@@ -6,9 +6,10 @@ expected_arch=${2:?Usage: container-smoke.sh IMAGE EXPECTED_ARCH}
 scratch=$(mktemp -d)
 container="downloads-smoke-$(basename "$scratch" | tr '[:upper:]' '[:lower:]')"
 volume="$container-data"
+restored_volume="$container-restored"
 cleanup() {
     docker rm --force "$container" >/dev/null 2>&1 || true
-    docker volume rm "$volume" >/dev/null 2>&1 || true
+    docker volume rm "$volume" "$restored_volume" >/dev/null 2>&1 || true
     rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -83,11 +84,13 @@ docker run --detach --name "$container" --cap-drop ALL \
     --mount "type=volume,source=$volume,target=/data" \
     --publish 127.0.0.1::8080 "$image" >/dev/null
 address="http://$(docker port "$container" 8080/tcp)"
-python3 - "$address" "$scratch/options.json" "$container" <<'PY'
+python3 - "$address" "$scratch/options.json" "$container" "$image" "$volume" "$restored_volume" <<'PY'
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -176,6 +179,50 @@ while True:
 assert subprocess.check_output(
     ["docker", "exec", container, "cat", credential_path], text=True
 ).strip() == integration, "App restart replaced its pairing credential"
+
+# Native Supervisor preserves UID0 entries. Prove the actual root-based VPN
+# app retains private pairing state after a cold volume restore, not just restart.
+image, volume, restored_volume = sys.argv[4:]
+subprocess.check_call(["docker", "stop", "--time", "15", container], stdout=subprocess.DEVNULL)
+archive = subprocess.check_output([
+    "docker", "run", "--rm", "--network", "none", "--cap-drop", "ALL",
+    "--entrypoint", "/bin/tar", "--mount", f"type=volume,source={volume},target=/data,readonly",
+    image, "-C", "/data", "-cf", "-", ".",
+])
+with tarfile.open(fileobj=io.BytesIO(archive)) as backup:
+    pairing = backup.getmember("./media/integration-token")
+    assert pairing.uid == 0 and pairing.mode == 0o600
+subprocess.check_call(["docker", "volume", "create", restored_volume], stdout=subprocess.DEVNULL)
+subprocess.run([
+    "docker", "run", "--rm", "--interactive", "--network", "none", "--cap-drop", "ALL",
+    "--entrypoint", "/bin/tar", "--mount", f"type=volume,source={restored_volume},target=/data",
+    image, "-C", "/data", "-xf", "-",
+], input=archive, check=True)
+subprocess.check_call(["docker", "rm", container], stdout=subprocess.DEVNULL)
+subprocess.check_call([
+    "docker", "run", "--detach", "--name", container, "--cap-drop", "ALL",
+    "--env", "SUPERVISOR_TOKEN=fixture-supervisor-token",
+    "--mount", f"type=volume,source={restored_volume},target=/data",
+    "--publish", "127.0.0.1::8080", image,
+], stdout=subprocess.DEVNULL)
+address = "http://" + subprocess.check_output(
+    ["docker", "port", container, "8080/tcp"], text=True
+).strip()
+deadline = time.monotonic() + 30
+while True:
+    try:
+        integration_system()
+        break
+    except (OSError, urllib.error.URLError):
+        if time.monotonic() >= deadline:
+            raise
+        time.sleep(0.25)
+assert subprocess.check_output(
+    ["docker", "exec", container, "cat", credential_path], text=True
+).strip() == integration, "Cold restore replaced its pairing credential"
+assert subprocess.check_output(
+    ["docker", "exec", container, "stat", "-c", "%a:%u", credential_path], text=True
+).strip() == "600:0"
 logs = subprocess.check_output(["docker", "logs", container], stderr=subprocess.STDOUT, text=True)
 assert integration not in logs, "Generated pairing credential escaped into logs"
 PY
@@ -193,4 +240,4 @@ root = Path(sys.argv[1])
 token = json.loads((root / "options.json").read_text())["api_token"]
 assert token not in (root / "logs").read_text(), "API token escaped into container logs"
 PY
-echo "Container smoke passed ($expected_arch): packaged binaries, upstream Python imports, private pairing and restart, API authentication and graceful stop."
+echo "Container smoke passed ($expected_arch): packaged binaries, upstream Python imports, private pairing across restart/cold restore, API authentication and graceful stop."

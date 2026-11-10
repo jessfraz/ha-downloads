@@ -1,3 +1,8 @@
+# 0.4.2
+
+- Share the app shell and controls with HA App Kit while keeping Home Assistant
+  theme changes and app-only network settings intact.
+
 # 0.4.1
 
 - Enforce the same repository checks and release validation as the other apps.

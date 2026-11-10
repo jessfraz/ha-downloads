@@ -1,6 +1,6 @@
 [package]
 name = "ha-downloads"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "MIT"
 description = "VPN-protected Usenet downloads for Home Assistant"
@@ -16,6 +16,7 @@ name = "ha-downloads"
 path = "src/bin/ha-downloads.rs"
 
 [dependencies]
+ha-app-ui = { git = "https://github.com/jessfraz/ha-app-kit", rev = "a7b09c84ee35bf7c372dfcdc8614a0d48399af1c" }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 dropshot = "0.18"
