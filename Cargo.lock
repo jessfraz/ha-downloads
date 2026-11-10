@@ -731,12 +731,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ha-app-ui"
+version = "0.1.1"
+source = "git+https://github.com/jessfraz/ha-app-kit?rev=a7b09c84ee35bf7c372dfcdc8614a0d48399af1c#a7b09c84ee35bf7c372dfcdc8614a0d48399af1c"
+
+[[package]]
 name = "ha-downloads"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "clap",
  "dropshot",
+ "ha-app-ui",
  "http",
  "ipnet",
  "libc",

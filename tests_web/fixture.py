@@ -1,15 +1,38 @@
 """Serve shipped assets at a nested ingress path for browser tests only."""
 
+import json
+import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
 WEB_ROOT = Path(__file__).resolve().parents[1] / "web"
 INGRESS = "/api/hassio_ingress/browser-test/"
+
+
+def ui_root() -> Path:
+    metadata = json.loads(
+        subprocess.check_output(
+            ["cargo", "metadata", "--format-version", "1", "--locked"],
+            cwd=WEB_ROOT.parent,
+            text=True,
+        )
+    )
+    for package in metadata["packages"]:
+        if package["name"] == "ha-app-ui":
+            return Path(package["manifest_path"]).parent
+    raise RuntimeError("The locked shared UI dependency is unavailable")
+
+
+UI_ROOT = ui_root()
+
 ASSETS = {
     "": ("index.html", "text/html; charset=utf-8"),
     "style.css": ("style.css", "text/css; charset=utf-8"),
     "app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "shell.js": ("shell.js", "text/javascript; charset=utf-8"),
+    "app-kit.js": (UI_ROOT / "src/index.js", "text/javascript; charset=utf-8"),
+    "app-kit.css": (UI_ROOT / "src/style.css", "text/css; charset=utf-8"),
 }
 
 

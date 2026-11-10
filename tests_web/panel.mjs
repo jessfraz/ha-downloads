@@ -73,7 +73,7 @@ async function panel(t, initialStatus = readyStatus(), options = {}) {
     const coverage = [{ source: "radarr", state: "available", observed_at_unix_ms: now }, { source: "sonarr", state: "available", observed_at_unix_ms: now }];
     const responses = {
       system: { version: "0.1.5", capabilities: { read: true, request: true, admin: true }, transport: "ingress", credential_role: "administrator" },
-      "health/stack": { generated_at_unix_ms: now, components: [], readiness: [{ operation: "transfer", state: "ready", reasons: [], expires_at_unix_ms: now + 60000 }] },
+      "health/stack": { generated_at_unix_ms: now, components: [], readiness: [{ operation: "transfer", state: fixture.status.state === "ready" ? "ready" : "blocked", reasons: fixture.status.state === "ready" ? [] : ["protection_unverified"], expires_at_unix_ms: now + 60000 }] },
       movies: { items: [], next_page: null, coverage }, series: { items: [], next_page: null, coverage },
       queue: { items: [], next_page: null, coverage }, requests: { items: [], next_page: null, coverage },
     };
@@ -113,7 +113,10 @@ test("first run explains setup and keeps the downloader closed", async (t) => {
   assert.equal(await page.locator("iframe").count(), 0);
   assert.equal(await page.getByRole("link", { name: /Open downloads/ }).count(), 0);
   assert.equal(await page.locator("#downloader-state").innerText(), "Stopped");
-  assert.match(await page.locator("footer").innerText(), /Other Home Assistant apps keep their network settings/);
+  await page.locator("#stack-health-label").filter({ hasText: "Download stack needs attention" }).waitFor();
+  const scopeNote = page.locator(".scope-note");
+  assert.equal(await scopeNote.isVisible(), true);
+  assert.match(await scopeNote.innerText(), /Other Home Assistant apps keep their network settings/);
   assert.deepEqual(fixture.errors, []);
 });
 
@@ -339,7 +342,7 @@ test("mobile, dark mode, reduced motion, and keyboard controls remain usable", a
 });
 
 test("ingress follows Home Assistant theme changes independently of the system theme", async (t) => {
-  const { page } = await panel(t, setupStatus(), { colorScheme: "light" });
+  const { page, fixture } = await panel(t, setupStatus(), { colorScheme: "light" });
   await page.goto(`${base}theme-host/`);
   const ingress = page.frameLocator("iframe[title='Downloads ingress']");
   await ingress.locator("#connection-title").filter({ hasText: "Set up your VPN" }).waitFor({ state: "attached" });
@@ -349,6 +352,14 @@ test("ingress follows Home Assistant theme changes independently of the system t
   const root = ingress.locator("html");
   assert.equal(await root.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(18, 27, 36)");
   assert.equal(await root.evaluate((element) => getComputedStyle(element).colorScheme), "dark");
+  const footerStatus = ingress.locator("#service-status");
+  fixture.status = readyStatus();
+  await refresh(ingress);
+  await footerStatus.filter({ hasText: "Download stack ready" }).waitFor();
+  assert.equal(await footerStatus.evaluate((element) => getComputedStyle(element).color), "rgb(133, 217, 173)");
+  await page.keyboard.press("Tab");
+  await ingress.locator("#refresh").focus();
+  assert.equal(await ingress.locator("#refresh").evaluate((element) => getComputedStyle(element).outlineColor), "rgb(127, 166, 238)");
   await page.evaluate(() => {
     document.documentElement.style.colorScheme = "light";
     document.documentElement.style.setProperty("--primary-background-color", "#f5f7fa");
@@ -361,6 +372,8 @@ test("ingress follows Home Assistant theme changes independently of the system t
     return getComputedStyle(root).colorScheme === "light";
   });
   assert.equal(await root.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(245, 247, 250)");
+  assert.equal(await footerStatus.evaluate((element) => getComputedStyle(element).color), "rgb(19, 118, 75)");
+  assert.equal(await ingress.locator("#refresh").evaluate((element) => getComputedStyle(element).outlineColor), "rgb(61, 110, 201)");
 });
 
 

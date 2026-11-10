@@ -1,3 +1,5 @@
+import { shell } from "./shell.js";
+
 (() => {
   "use strict";
 
@@ -152,6 +154,7 @@
     byId("connection-help").hidden = true;
     byId("app-version").textContent = status.version.slice(0, 40);
     byId("app-version").hidden = false;
+    shell.setStatus(ready ? "Download stack ready" : setup ? "Setup needed" : "Download stack not ready", ready ? "ok" : setup ? "neutral" : "stale");
     const checkedAt = status.health?.checked_at_unix_ms;
     byId("last-checked").textContent = status.health !== undefined && !Number.isFinite(checkedAt)
       ? "Checks unavailable"
@@ -233,6 +236,7 @@
     byId("public-ip").hidden = true;
     byId("public-ip").textContent = "";
     byId("last-checked").textContent = "Reconnecting…";
+    shell.setStatus("App connection unavailable", "error");
     for (const name of ["vpn", "firewall", "dns", "downloader"]) {
       setCheck(name, "Unavailable", "Unable to check current status.");
     }
