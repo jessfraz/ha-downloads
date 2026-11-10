@@ -21,9 +21,9 @@ are listed in [Gluetun’s provider guide](https://github.com/qdm12/gluetun-wiki
 Open the sidebar panel
 to configure SABnzbd and resume the queue when ready.
 
-The app is experimental. Missing credentials leave the setup page available
-and the downloader stopped. Verify the chosen provider, media paths, and tunnel
-failure behavior before relying on a deployment.
+Missing credentials leave the setup page available and the downloader stopped.
+Verify the chosen provider, media paths, and tunnel failure behavior before
+relying on a deployment.
 
 See [app documentation](downloads/DOCS.md) for options, storage, and connecting
 media managers. No indexer, Usenet account, or VPN subscription is included.

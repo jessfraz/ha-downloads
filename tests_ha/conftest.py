@@ -20,6 +20,7 @@ from pytest_homeassistant.common import MockConfigEntry, MockUser
 from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.downloads import DownloadsConfigEntry
+from custom_components.downloads._app_kit.version import LOADED_VERSION
 from custom_components.downloads.const import (
     APP_URL,
     CONF_ADDON_SLUG,
@@ -260,7 +261,7 @@ class LegacyAppInfo:
     slug: str = LEGACY_APP_SLUG
     name: str = "Downloads"
     url: str = APP_URL
-    version: str = "0.4.4"
+    version: str = LOADED_VERSION
     state: str = "started"
     ip_address: IPv4Address = IPv4Address("172.30.33.7")
 

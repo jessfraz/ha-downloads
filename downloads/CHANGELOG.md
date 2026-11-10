@@ -1,3 +1,7 @@
+# 0.4.5
+
+- Mark Downloads stable in the Home Assistant app store.
+
 # 0.4.4
 
 - Repair app and companion version mismatches from Home Assistant Repairs.
