@@ -42,7 +42,7 @@
         };
         cargoLock = {
           lockFile = ./Cargo.lock;
-          outputHashes."ha-app-ui-0.1.1" = "sha256-+dmnGRq9mQH3fiIFK6jNo9xfVDCVGDQ11kN8AxweeaI=";
+          outputHashes."ha-app-ui-0.1.2" = "sha256-MqC+Tv1dISbN7+TuwAIWUWCI2sfwzMj+kv4fDBk0D+g=";
         };
         cargoBuildFlags = ["--bin" "ha-downloads"];
         cargoTestFlags = ["--test" "cli" "--test" "cli_client"];
