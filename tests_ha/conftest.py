@@ -260,6 +260,7 @@ class LegacyAppInfo:
     slug: str = LEGACY_APP_SLUG
     name: str = "Downloads"
     url: str = APP_URL
+    version: str = "0.4.4"
     state: str = "started"
     ip_address: IPv4Address = IPv4Address("172.30.33.7")
 

@@ -2,13 +2,17 @@
 
 import re
 
+from homeassistant.components.repairs import RepairsFlow
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
+from ._app_kit.repairs import VersionRepairSpec, create_version_fix_flow
+from ._app_kit.version import LOADED_VERSION
+from ._app_kit.versions import ReleaseVersion
 from .const import CONF_ADDON_SLUG, DOMAIN
 from .models import Component, HealthIssueCode, HealthSnapshot, HealthState, IssueSeverity
-from .native_health import HealthData, Reason
+from .native_health import HealthData, NativeHealthCoordinator, Reason, async_fetch_health
 
 _INTEGRATION_URL = "/config/integrations/integration/downloads"
 _PROTECTION_FAILURES = frozenset(
@@ -21,7 +25,14 @@ _PROTECTION_FAILURES = frozenset(
     }
 )
 _UNKNOWN_ISSUES = frozenset({HealthIssueCode.CHECKS_MISSING, HealthIssueCode.CHECKS_STALE})
-_KEYS = ("protection", "app", "configuration", "protection_connection", "media_connection")
+_KEYS = (
+    "protection",
+    "app",
+    "configuration",
+    "protection_connection",
+    "media_connection",
+    "version_mismatch",
+)
 
 
 @callback
@@ -173,3 +184,34 @@ def async_remove(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Unloading is not recovery; removing the configured owner ends its Repairs."""
     for key in (*_KEYS, *(f"component_{component.value}" for component in Component)):
         async_clear(hass, entry, key)
+
+
+async def _async_probe_version(hass: HomeAssistant, entry: ConfigEntry) -> ReleaseVersion:
+    from .coordinator import DownloadsCoordinator
+
+    runtime: DownloadsCoordinator | NativeHealthCoordinator = entry.runtime_data
+    if isinstance(runtime, DownloadsCoordinator):
+        return ReleaseVersion.parse((await runtime.async_read_system()).version)
+    return ReleaseVersion.parse((await async_fetch_health(hass, runtime.slug)).app_version)
+
+
+def _app_slug(entry: ConfigEntry) -> str | None:
+    slug = entry.data.get(CONF_ADDON_SLUG)
+    return slug if isinstance(slug, str) else None
+
+
+VERSION_REPAIR = VersionRepairSpec(
+    DOMAIN,
+    "Downloads",
+    "1443494457",
+    ReleaseVersion.parse(LOADED_VERSION),
+    _async_probe_version,
+    _app_slug,
+)
+
+
+async def async_create_fix_flow(
+    hass: HomeAssistant, issue_id: str, _data: dict[str, str | int | float | None] | None
+) -> RepairsFlow:
+    """Resolve the issue against its current loaded configuration entry."""
+    return create_version_fix_flow(hass, issue_id, VERSION_REPAIR)

@@ -1,3 +1,7 @@
+# 0.4.4
+
+- Repair app and companion version mismatches from Home Assistant Repairs.
+
 # 0.4.3
 
 - Fix select spacing and let Dependabot track App Kit releases.

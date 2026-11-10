@@ -6,8 +6,10 @@ from datetime import timedelta
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant.common import async_fire_time_changed
 from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
@@ -339,3 +341,42 @@ async def test_native_repairs_keep_polling_when_the_problem_entity_is_disabled(
     issue = ir.async_get(hass).async_get_issue(DOMAIN, f"{legacy_entry.entry_id}_protection")
     assert issue is not None and issue.data == {"codes": "vpn_unavailable"}
     assert hass.states.get("binary_sensor.downloads_problem") is None
+
+
+async def test_native_version_repair_uses_fresh_owned_supervisor_observation(
+    hass: HomeAssistant,
+    legacy_entry: DownloadsConfigEntry,
+    legacy_supervisor: LegacySupervisor,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    registry = ir.async_get(hass)
+    issue_id = f"{legacy_entry.entry_id}_version_mismatch"
+    matching_version = legacy_supervisor.app.version
+    legacy_supervisor.app.version = "9.8.7"
+    await legacy_entry.runtime_data.async_refresh()
+
+    issue = registry.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None and issue.is_fixable
+    assert issue.config_entry_id == legacy_entry.entry_id
+    assert issue.translation_placeholders == {
+        "app_version": "9.8.7",
+        "integration_version": matching_version,
+    }
+    assert await async_setup_component(hass, "repairs", {})
+    flow = await hass.data["repairs"]["flow_manager"].async_init(
+        DOMAIN, context={"issue_id": issue_id}
+    )
+    assert flow["type"] is FlowResultType.ABORT
+    assert flow["reason"] == "managed_update_unavailable"
+    assert registry.async_get_issue(DOMAIN, issue_id) is issue
+
+    legacy_supervisor.app.version = matching_version
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(LEGACY_HEALTH_URL, status=502)
+    await legacy_entry.runtime_data.async_refresh()
+    assert registry.async_get_issue(DOMAIN, issue_id) is issue
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(LEGACY_HEALTH_URL, json=legacy_health_record())
+    await legacy_entry.runtime_data.async_refresh()
+    assert registry.async_get_issue(DOMAIN, issue_id) is None

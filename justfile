@@ -25,6 +25,7 @@ web:
     node --test tests_web/panel.mjs tests_web/media.mjs
 
 ha:
+    uv run --project integration --frozen python scripts/build-integration
     cargo build --locked --bin ha-downloads
     DOWNLOADS_TEST_BINARY="$PWD/target/debug/ha-downloads" uv run --project integration --frozen pytest -q -c integration/pyproject.toml tests_ha
     uv run --project integration --frozen ruff check --config integration/pyproject.toml custom_components/downloads tests_ha
@@ -45,3 +46,6 @@ container:
 
 network image="ha-downloads:smoke":
     ./scripts/network-test.sh "{{image}}"
+
+integration-zip:
+    uv run --project integration --frozen python scripts/build-integration --output work

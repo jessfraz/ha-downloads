@@ -16,6 +16,22 @@
     ...
   }: let
     systems = ["aarch64-darwin" "aarch64-linux" "x86_64-linux"];
+    # Shared UI and companion crates must resolve to one tagged Git source.
+    kitSources = nixpkgs.lib.unique (
+      map (package: package.source or "") (
+        builtins.filter
+          (package: builtins.elem package.name ["ha-app-ui" "ha-app-kit-ha"])
+          (builtins.fromTOML (builtins.readFile ./Cargo.lock)).package
+      )
+    );
+    cargoLockFile =
+      assert nixpkgs.lib.assertMsg (
+        builtins.length kitSources <= 1
+        && builtins.all
+          (source: builtins.match "git[+]https://github[.]com/jessfraz/ha-app-kit[?]tag=v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?#[0-9a-f]{40}" source != null)
+          kitSources
+      ) "App Kit crates must use one tagged release from github.com/jessfraz/ha-app-kit.";
+      ./Cargo.lock;
   in {
     packages = nixpkgs.lib.genAttrs systems (system: let
       pkgs = import nixpkgs {
@@ -41,8 +57,8 @@
           ];
         };
         cargoLock = {
-          lockFile = ./Cargo.lock;
-          outputHashes."ha-app-ui-0.1.2" = "sha256-MqC+Tv1dISbN7+TuwAIWUWCI2sfwzMj+kv4fDBk0D+g=";
+          lockFile = cargoLockFile;
+          allowBuiltinFetchGit = true;
         };
         cargoBuildFlags = ["--bin" "ha-downloads"];
         cargoTestFlags = ["--test" "cli" "--test" "cli_client"];
