@@ -1,3 +1,7 @@
+# 0.4.7
+
+- Show specific version repair failures and allow retrying the version check.
+
 # 0.4.6
 
 - Match the Home Assistant App and Marketplace icons to the sidebar.
