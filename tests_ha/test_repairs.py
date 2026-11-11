@@ -366,8 +366,9 @@ async def test_native_version_repair_uses_fresh_owned_supervisor_observation(
     flow = await hass.data["repairs"]["flow_manager"].async_init(
         DOMAIN, context={"issue_id": issue_id}
     )
-    assert flow["type"] is FlowResultType.ABORT
-    assert flow["reason"] == "managed_update_unavailable"
+    assert flow["type"] is FlowResultType.FORM
+    assert flow["step_id"] == "retry"
+    assert flow["errors"] == {"base": "managed_update_unavailable"}
     assert registry.async_get_issue(DOMAIN, issue_id) is issue
 
     legacy_supervisor.app.version = matching_version
