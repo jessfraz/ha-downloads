@@ -27,7 +27,7 @@ jobs:
       - run: cargo build --locked --bin ha-downloads
       - name: Install the built Marketplace integration
         run: |
-          uv run --project integration --frozen python scripts/build-integration --output "$RUNNER_TEMP/marketplace"
+          uv run --project integration --frozen python scripts/build-integration --check-brand downloads --output "$RUNNER_TEMP/marketplace"
           mv custom_components/downloads "$RUNNER_TEMP/downloads-source"
           uv run --project integration --frozen python -m zipfile -e "$RUNNER_TEMP/marketplace/downloads.zip" custom_components/downloads
       - run: uv run --project integration --frozen pytest -q -c integration/pyproject.toml tests_ha

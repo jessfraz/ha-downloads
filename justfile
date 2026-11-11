@@ -48,4 +48,4 @@ network image="ha-downloads:smoke":
     ./scripts/network-test.sh "{{image}}"
 
 integration-zip:
-    uv run --project integration --frozen python scripts/build-integration --output work
+    uv run --project integration --frozen python scripts/build-integration --check-brand downloads --output work
