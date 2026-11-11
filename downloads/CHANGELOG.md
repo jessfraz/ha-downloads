@@ -1,3 +1,7 @@
+# 0.4.6
+
+- Match the Home Assistant App and Marketplace icons to the sidebar.
+
 # 0.4.5
 
 - Mark Downloads stable in the Home Assistant app store.
