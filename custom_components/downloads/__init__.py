@@ -3,11 +3,12 @@
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
-from ._app_kit.repairs import VersionRepairs
+from ._app_kit.repairs import VersionRepairs, async_check_startup_version
 from .client import DownloadsClient
 from .const import CONF_ADDON_SLUG, CONF_BACKEND_URL, CONF_TOKEN, DOMAIN
 from .coordinator import DownloadsCoordinator
@@ -52,24 +53,28 @@ async def async_migrate_entry(hass: HomeAssistant, entry: DownloadsConfigEntry) 
 async def async_setup_entry(hass: HomeAssistant, entry: DownloadsConfigEntry) -> bool:
     """Native health remains usable without a media token or provider access."""
     native_health = None
-    if entry.data.get(CONF_ADDON_SLUG):
-        native_health = NativeHealthCoordinator(hass, entry)
-        await native_health.async_config_entry_first_refresh()
-    if CONF_BACKEND_URL in entry.data and CONF_TOKEN in entry.data:
-        client = DownloadsClient(
-            async_get_clientsession(hass),
-            entry.data[CONF_BACKEND_URL],
-            entry.data[CONF_TOKEN],
-        )
-        coordinator = DownloadsCoordinator(hass, entry, client, native_health)
-        await coordinator.async_config_entry_first_refresh()
-        entry.runtime_data = coordinator
-        platforms = MEDIA_PLATFORMS
-    else:
-        if native_health is None:
-            return False
-        entry.runtime_data = native_health
-        platforms = HEALTH_PLATFORMS
+    try:
+        if entry.data.get(CONF_ADDON_SLUG):
+            native_health = NativeHealthCoordinator(hass, entry)
+            await native_health.async_config_entry_first_refresh()
+        if CONF_BACKEND_URL in entry.data and CONF_TOKEN in entry.data:
+            client = DownloadsClient(
+                async_get_clientsession(hass),
+                entry.data[CONF_BACKEND_URL],
+                entry.data[CONF_TOKEN],
+            )
+            coordinator = DownloadsCoordinator(hass, entry, client, native_health)
+            await coordinator.async_config_entry_first_refresh()
+            entry.runtime_data = coordinator
+            platforms = MEDIA_PLATFORMS
+        else:
+            if native_health is None:
+                return False
+            entry.runtime_data = native_health
+            platforms = HEALTH_PLATFORMS
+    except ConfigEntryNotReady:
+        await async_check_startup_version(hass, entry, VERSION_REPAIR)
+        raise
     version_repairs = VersionRepairs(hass, entry, VERSION_REPAIR)
     entry.runtime_data.version_repairs = version_repairs
     version_repairs.async_start()

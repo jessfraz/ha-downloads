@@ -1,3 +1,8 @@
+# 0.4.8
+
+- Keep the one-click version repair usable when an older app prevents
+  the integration from starting.
+
 # 0.4.7
 
 - Show specific version repair failures and allow retrying the version check.
