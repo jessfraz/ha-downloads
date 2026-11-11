@@ -6,13 +6,15 @@ from homeassistant.components.repairs import RepairsFlow
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from ._app_kit.repairs import VersionRepairSpec, create_version_fix_flow
 from ._app_kit.version import LOADED_VERSION
 from ._app_kit.versions import ReleaseVersion
-from .const import CONF_ADDON_SLUG, DOMAIN
-from .models import Component, HealthIssueCode, HealthSnapshot, HealthState, IssueSeverity
-from .native_health import HealthData, NativeHealthCoordinator, Reason, async_fetch_health
+from .client import DownloadsClient
+from .const import API_PREFIX, APP_URL, CONF_ADDON_SLUG, CONF_BACKEND_URL, CONF_TOKEN, DOMAIN
+from .models import Component, HealthIssueCode, HealthSnapshot, HealthState, IssueSeverity, System
+from .native_health import HealthData, Reason
 
 _INTEGRATION_URL = "/config/integrations/integration/downloads"
 _PROTECTION_FAILURES = frozenset(
@@ -187,12 +189,29 @@ def async_remove(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def _async_probe_version(hass: HomeAssistant, entry: ConfigEntry) -> ReleaseVersion:
-    from .coordinator import DownloadsCoordinator
+    if CONF_BACKEND_URL in entry.data and CONF_TOKEN in entry.data:
+        client = DownloadsClient(
+            async_get_clientsession(hass),
+            entry.data[CONF_BACKEND_URL],
+            entry.data[CONF_TOKEN],
+        )
+        response = await client.request("GET", f"{API_PREFIX}/system")
+        if response.status != 200:
+            raise ValueError("Cannot verify the Downloads version")
+        system = System.parse(response.json())
+        if system.role != "integration" or not system.read or system.admin:
+            raise ValueError("Cannot verify the Downloads version")
+        return ReleaseVersion.parse(system.version)
 
-    runtime: DownloadsCoordinator | NativeHealthCoordinator = entry.runtime_data
-    if isinstance(runtime, DownloadsCoordinator):
-        return ReleaseVersion.parse((await runtime.async_read_system()).version)
-    return ReleaseVersion.parse((await async_fetch_health(hass, runtime.slug)).app_version)
+    from homeassistant.components.hassio import get_supervisor_client
+
+    slug = _app_slug(entry)
+    if slug is None:
+        raise ValueError("Cannot verify the Downloads app")
+    app = await get_supervisor_client(hass).addons.addon_info(slug)
+    if app.url != APP_URL or app.state != "started":
+        raise ValueError("Cannot verify the Downloads app")
+    return ReleaseVersion.parse(app.version)
 
 
 def _app_slug(entry: ConfigEntry) -> str | None:
