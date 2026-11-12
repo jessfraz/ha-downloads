@@ -6,7 +6,7 @@ requires-python = ">=3.12,<3.14"
 license = "MIT"
 dependencies = [
   "apprise==2.1.0",
-  "sabctools==9.6.3",
+  "sabctools==10.0.0",
   "ct3==3.4.0.post5",
   "cffi==2.1.1",
   "pycparser==3.12",
