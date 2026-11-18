@@ -106,6 +106,7 @@ test("search requests a movie through the typed API using parent-app settings an
   await find(page, "Primer", "Primer, 2004, movie");
   await page.getByRole("button", { name: "Request movie", exact: true }).waitFor();
   assert.match(await page.locator("#media-detail").innerText(), /Uses Radarr settings/);
+  await page.locator("#request-readiness-note").waitFor({ state: "hidden" });
   assert.equal(await page.locator("#request-readiness-note").isVisible(), false);
   await page.getByRole("button", { name: "Request movie", exact: true }).click();
   await page.locator("#media-detail").getByText(/Request accepted and search queued/).waitFor();
