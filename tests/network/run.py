@@ -526,7 +526,16 @@ def call(mode, **params):
     )
     assert app_health(app) == 200
     start_vpn(server)
-    wait(lambda: is_state(app, "ready"), "VPN reconnects with running queue")
+    try:
+        wait(lambda: is_state(app, "ready"), "VPN reconnects with running queue")
+    except RuntimeError:
+        # OpenVPN is daemonized, so docker logs omits the fixture's failure reason.
+        try:
+            logs = execute(server, "tail", "-n", "100", "/tmp/test-vpn.log", check=False)
+            (WORK / ("network-failure-" + NONCE + "-vpn.log")).write_text(logs.stdout + logs.stderr)
+        except (OSError, subprocess.SubprocessError) as error:
+            print("Fixture VPN log capture failed:", type(error).__name__, file=sys.stderr)
+        raise
     assert app_health(app) == 200
     execute(
         app,
@@ -630,8 +639,7 @@ print(json.dumps(children))
         for row in lifecycle
     ), "Typed service failure did not survive the app restart in the journal"
     assert any(
-        row.get("event") == "vpn_process_exited" and row.get("signal") == 9
-        for row in lifecycle
+        row.get("event") == "vpn_process_exited" and row.get("signal") == 9 for row in lifecycle
     ), "Typed VPN process exit did not survive in the journal"
     evidence = []
     for line in docker("logs", server).stdout.splitlines():
