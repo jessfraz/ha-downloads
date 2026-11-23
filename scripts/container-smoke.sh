@@ -22,6 +22,7 @@ test "$(docker image inspect "$image" --format '{{.Architecture}}')" = "$expecte
 docker run --rm --network none --cap-drop ALL --entrypoint /bin/sh "$image" -ec '
     /gluetun-entrypoint genkey >/dev/null
     python /opt/SABnzbd.py --version | grep -F "5.1.3"
+    transmission-daemon --version 2>&1 | grep -F "4.1.4"
     unrar > /dev/null
     par2 -V
     7zz i > /dev/null

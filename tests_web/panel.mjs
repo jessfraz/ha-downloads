@@ -394,6 +394,33 @@ test("stale functional checks revoke readiness and retain fixed service failure 
 });
 
 
+test("torrent diagnostics identify a failed native probe beside healthy Usenet checks", async (t) => {
+  const status = readyStatus();
+  status.state = "degraded";
+  status.message = "The torrent downloader API is unavailable. Check the app diagnostics.";
+  status.health = { ready: false, reasons: ["not_ready", "downloader_unavailable"] };
+  const passed = { outcome: "passed", http_status: 200, elapsed_ms: 1 };
+  status.diagnostics = {
+    checks: Object.fromEntries(["vpn_service", "vpn_health", "dns_service", "dns_lookup", "resolver", "firewall"].map((name) => [name, passed])),
+    downloader_check: passed,
+    torrent_check: { outcome: "timeout", elapsed_ms: 2000 },
+    last_failure: { reason: "torrent_not_ready", exit_code: null, signal: null, cleanup_failed: false },
+  };
+  const { page, fixture } = await panel(t, status);
+  await heading(page, "Downloads unavailable");
+  await page.locator("#diagnostics-panel summary").click();
+  assert.match(await page.locator("#diagnostic-checks").innerText(), /Downloader API: Passed/);
+  assert.match(await page.locator("#diagnostic-checks").innerText(), /Torrent downloader API: Request timed out.*2000 ms/);
+  assert.match(await page.locator("#diagnostic-history").innerText(), /Torrent downloader startup timed out/);
+  fixture.status.diagnostics.torrent_check = { outcome: "passed", http_status: 200, elapsed_ms: 2 };
+  fixture.status.state = "ready";
+  fixture.status.health = { ready: true, reasons: [] };
+  await refresh(page);
+  await heading(page, "Connected and protected");
+  assert.match(await page.locator("#diagnostic-checks").innerText(), /Torrent downloader API: Passed.*HTTP 200/);
+  assert.deepEqual(fixture.errors, []);
+});
+
 test("terminal service failures preserve their specific recovery message", async (t) => {
   const status = setupStatus();
   status.state = "degraded";

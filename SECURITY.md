@@ -1,6 +1,12 @@
 # Security boundaries
 
 Downloads runs Gluetun and SABnzbd in one private container network namespace.
+The optional Transmission daemon uses that same namespace, with no new
+capabilities or network exceptions. It cannot start before protection is ready.
+Its RPC listener is loopback-only and requires separate native credentials;
+only the exact RPC path is proxied through the existing internal API. HA and
+Downloads bearer tokens are not forwarded. No native torrent web UI or peer
+port is exposed by this bridge.
 NET_ADMIN, NET_RAW and `/dev/net/tun` are requested. The app does not use host
 networking/PID/IPC, the Docker socket, Home Assistant API access, Supervisor
 management privileges, or arbitrary user-supplied environment overrides.

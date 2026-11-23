@@ -1,5 +1,5 @@
 name: Downloads
-version: "0.4.10"
+version: "0.5.0"
 slug: downloads
 description: Movies and TV with saved Radarr/Sonarr settings and VPN-protected downloads
 url: https://github.com/jessfraz/ha-downloads
@@ -41,6 +41,10 @@ options:
   network:
     local_subnets: ["172.30.32.0/23"]
   api_token: ""
+  torrents:
+    enabled: false
+    username: ""
+    password: ""
   media:
     radarr: {url: "", api_key: ""}
     sonarr: {url: "", api_key: ""}
@@ -63,6 +67,10 @@ schema:
     local_subnets:
       - str
   api_token: password
+  torrents:
+    enabled: bool
+    username: str
+    password: password
   media:
     radarr: {url: str, api_key: password}
     sonarr: {url: str, api_key: password}

@@ -4,6 +4,11 @@ Downloads is a Home Assistant app that runs SABnzbd behind Gluetun in the same
 private container network namespace. A small Rust service owns configuration,
 process lifecycle, status, media requests, and authenticated ingress. Gluetun owns the VPN,
 firewall kill switch, and DNS. No custom VPN protocol or firewall is implemented.
+Optional Transmission runs in this same namespace after the same startup gates.
+It cannot use an untunneled peer, tracker, web-seed or DNS route. Its native RPC
+binds only loopback; the existing internal API proxies the exact
+`/transmission/rpc` route and requires Transmission's own Basic authentication.
+HA identity and role bearer credentials are never forwarded to that daemon.
 
 The app never uses host networking, the Docker socket, host PID/IPC namespaces,
 Home Assistant's API, or Supervisor management APIs. The scoped Supervisor
@@ -28,9 +33,10 @@ belong in this repository.
 5. A tunnel failure cannot create a direct WAN route: Gluetun's firewall remains
    authoritative. Runtime health displays the failure. Downloader lifecycle
    must not silently resume an operator-paused queue.
-6. Stop and reap owned children and adopted descendants on termination.
+6. Stop both downloaders before stopping Gluetun, and reap owned children and
+   adopted descendants on termination.
    OpenVPN starts its own process group; final cleanup uses the private
-   container PID 1 child list after both direct services have stopped.
+   container PID 1 child list after the direct services have stopped.
    Unexpected child exit is a
    visible failure, never permission to run without the VPN.
 

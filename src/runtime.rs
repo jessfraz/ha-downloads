@@ -1,4 +1,4 @@
-//! Own both process groups. SAB stops before Gluetun can remove its protections.
+//! Own protected process groups. Downloaders stop before Gluetun can remove protection.
 use crate::{
     config::Config,
     monitor::{
@@ -125,7 +125,7 @@ fn signal_group(group: i32, signal: i32) -> Result<()> {
     Ok(())
 }
 /// The HA app runs without an init wrapper in a private process namespace.
-/// After the two direct services are reaped, PID 1 owns their orphaned descendants,
+/// After the direct services are reaped, PID 1 owns their orphaned descendants,
 /// including OpenVPN, which deliberately creates a different process group.
 async fn reap_container_children() -> Result<()> {
     if !cfg!(target_os = "linux") || std::process::id() != 1 {
@@ -156,7 +156,7 @@ async fn reap_container_children() -> Result<()> {
         for pid in children {
             let mut status = 0;
             // SAFETY: the kernel's children list is scoped to this container PID 1.
-            // Both registered direct children were already waited, so their status cannot be stolen.
+            // All registered direct children were already waited, so their status cannot be stolen.
             let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
             if result > 0 {
                 continue;
@@ -199,14 +199,27 @@ async fn reap_container_children() -> Result<()> {
 struct Children {
     vpn: Option<OwnedProcess>,
     downloader: Option<OwnedProcess>,
+    torrent: Option<OwnedProcess>,
     failure: Option<ServiceIncident>,
 }
 impl Children {
     async fn stop(&mut self) -> Result<()> {
-        let sab = match self.downloader.as_mut() {
-            Some(child) => child.stop().await,
-            None => Ok(()),
-        };
+        // Both downloaders must stop before VPN teardown. Stop them together so
+        // adding a second child does not exceed Supervisor's shutdown timeout.
+        let (sab, torrent) = tokio::join!(
+            async {
+                match self.downloader.as_mut() {
+                    Some(child) => child.stop().await,
+                    None => Ok(()),
+                }
+            },
+            async {
+                match self.torrent.as_mut() {
+                    Some(child) => child.stop().await,
+                    None => Ok(()),
+                }
+            }
+        );
         let vpn = match self.vpn.as_mut() {
             Some(child) => child.stop().await,
             None => Ok(()),
@@ -215,10 +228,13 @@ impl Children {
         if let Some(child) = self.downloader.as_mut() {
             child.finish_logs().await;
         }
+        if let Some(child) = self.torrent.as_mut() {
+            child.finish_logs().await;
+        }
         if let Some(child) = self.vpn.as_mut() {
             child.finish_logs().await;
         }
-        sab.and(vpn).and(descendants)
+        sab.and(torrent).and(vpn).and(descendants)
     }
     fn check_children(&mut self) -> Result<()> {
         if let Some(vpn) = self.vpn.as_mut()
@@ -252,6 +268,22 @@ impl Children {
                 signal: exit.signal(),
             });
             return Err(ServiceFailure::DownloaderExited.into());
+        }
+        if let Some(torrent) = self.torrent.as_mut()
+            && let Some(exit) = torrent.exited()?
+        {
+            self.failure = Some(ServiceIncident {
+                at_unix_ms: unix_ms(),
+                reason: ServiceFailure::TorrentExited,
+                exit_code: exit.code(),
+                signal: exit.signal(),
+                cleanup_failed: false,
+            });
+            log_lifecycle(LifecycleEvent::TorrentProcessExited {
+                exit_code: exit.code(),
+                signal: exit.signal(),
+            });
+            return Err(ServiceFailure::TorrentExited.into());
         }
         Ok(())
     }
@@ -313,6 +345,15 @@ impl Children {
         .stderr(Stdio::null());
         self.downloader =
             Some(OwnedProcess::spawn(sab).map_err(|_| ServiceFailure::DownloaderStartFailed)?);
+        if config.torrents.enabled {
+            let directory = Path::new("/data/transmission");
+            crate::torrent::prepare(&config.torrents, directory)
+                .map_err(|_| ServiceFailure::TorrentConfigurationFailed)?;
+            self.torrent = Some(
+                OwnedProcess::spawn(crate::torrent::command(directory))
+                    .map_err(|_| ServiceFailure::TorrentStartFailed)?,
+            );
+        }
         let mut modules_ready = ModuleReadiness::Unverified;
         let mut starting = Status::starting(&config.vpn.provider);
         starting.downloader.state = DownloaderState::Starting;
@@ -320,10 +361,13 @@ impl Children {
         status.send_replace(starting);
         let client = reqwest::Client::builder()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .timeout(Duration::from_secs(2))
             .build()?;
         let downloader_url =
             "http://127.0.0.1:8081/sabnzbd/api?mode=version&output=json".parse::<reqwest::Url>()?;
+        let torrent_url = "http://127.0.0.1:8082/transmission/rpc".parse::<reqwest::Url>()?;
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             self.check_children()?;
@@ -354,11 +398,24 @@ impl Children {
             let check = downloader_check(&client, &downloader_url, modules_ready).await;
             diagnostics.downloader_check = check;
             diagnostics.downloader_checked_at_unix_ms = Some(unix_ms());
+            let torrent_ready = if config.torrents.enabled {
+                let check = crate::torrent::check(&client, &config.torrents, &torrent_url).await;
+                diagnostics.torrent_check = Some(check);
+                diagnostics.torrent_checked_at_unix_ms = Some(unix_ms());
+                check.passed()
+            } else {
+                true
+            };
             status.send_modify(|value| value.diagnostics = diagnostics);
-            if matches!(check.outcome, Outcome::Passed | Outcome::ModulesUnavailable) {
+            if torrent_ready
+                && matches!(check.outcome, Outcome::Passed | Outcome::ModulesUnavailable)
+            {
                 break;
             }
             if Instant::now() >= deadline {
+                if !torrent_ready {
+                    return Err(ServiceFailure::TorrentNotReady.into());
+                }
                 log_lifecycle(LifecycleEvent::DownloaderReadinessTimedOut { last_probe: check });
                 return Err(ServiceFailure::DownloaderNotReady.into());
             }
@@ -375,6 +432,11 @@ impl Children {
             diagnostics.downloader_check =
                 downloader_check(&client, &downloader_url, modules_ready).await;
             diagnostics.downloader_checked_at_unix_ms = Some(unix_ms());
+            if config.torrents.enabled {
+                diagnostics.torrent_check =
+                    Some(crate::torrent::check(&client, &config.torrents, &torrent_url).await);
+                diagnostics.torrent_checked_at_unix_ms = Some(unix_ms());
+            }
             status.send_modify(|value| value.diagnostics = diagnostics);
             publish(status, &config.vpn.provider, protection, &probe).await;
             tokio::select! { _ = shutdown.changed() => return Ok(()), _ = sleep(Duration::from_secs(3)) => {} }
@@ -535,6 +597,16 @@ async fn publish(
             }
             .into();
     }
+    if status
+        .diagnostics
+        .torrent_check
+        .is_some_and(|check| !check.passed())
+        && status.state == crate::status::State::Ready
+    {
+        status.state = crate::status::State::Degraded;
+        status.message =
+            "The torrent downloader API is unavailable. Check the app diagnostics.".into();
+    }
     status.protection.kill_switch = if protection.firewall() {
         Verification::Verified
     } else {
@@ -634,6 +706,8 @@ pub async fn run(
         failed.diagnostics.checked_at_unix_ms = None;
         failed.diagnostics.downloader_check = Default::default();
         failed.diagnostics.downloader_checked_at_unix_ms = None;
+        failed.diagnostics.torrent_check = None;
+        failed.diagnostics.torrent_checked_at_unix_ms = None;
         if cleanup.is_ok() {
             failed.vpn.state = VpnState::Disconnected;
         }
