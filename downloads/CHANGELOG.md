@@ -1,3 +1,11 @@
+# 0.5.0
+
+- Add optional Transmission torrents inside the existing Gluetun VPN boundary,
+  with authenticated local RPC and native Radarr/Sonarr support.
+- Stop completed torrents, cap active uploads at 1 KiB/s, and disable router
+  forwarding, local discovery and completion scripts by default.
+- Include torrent failures in diagnostics and update the URL parser security fix.
+
 # 0.4.8
 
 - Keep the one-click version repair usable when an older app prevents

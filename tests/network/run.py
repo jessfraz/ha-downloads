@@ -122,6 +122,16 @@ def is_state(app: str, expected: str) -> bool:
     return state.get("state") == expected
 
 
+def fixture_events(server: str) -> list[dict[str, object]]:
+    events = []
+    for line in docker("logs", server).stdout.splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
 def main() -> dict[str, object]:
     global NETWORK_CREATED, IMAGE_CREATED, BASE_ID, BASE_TAG_CREATED
     BASE_ID = docker("image", "inspect", IMAGE, "--format", "{{.Id}}").stdout.strip()
@@ -129,7 +139,7 @@ def main() -> dict[str, object]:
         raise RuntimeError("Refusing an existing fixture base tag")
     docker("tag", BASE_ID, BASE_TAG)
     BASE_TAG_CREATED = True
-    for name in ("fixture.py", "probe.py", "Dockerfile"):
+    for name in ("fixture.py", "probe.py", "torrent_probe.py", "Dockerfile"):
         shutil.copyfile(ROOT / "tests/network" / name, TEMP / name)
     # Only generated test PKI goes into a disposable, unpublished test image.
     san = (
@@ -273,6 +283,7 @@ verb 3
         "vpn": {"provider": "custom"},
         "network": {"local_subnets": []},
         "api_token": secrets.token_hex(32),
+        "torrents": {"enabled": True, "username": "fixture", "password": secrets.token_hex(32)},
     }
     (data / "options.json").write_text(json.dumps(options))
     (data / "options.json").chmod(0o600)
@@ -436,10 +447,20 @@ for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
 print(json.dumps(pids))
 """
     assert json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout) == []
+    torrent_pids = """import json,os,pathlib
+pids=[]
+for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
+ try: arguments=path.read_bytes().split(bytes([0]))
+ except (FileNotFoundError,ProcessLookupError): continue
+ if arguments and pathlib.Path(os.fsdecode(arguments[0])).name=='transmission-daemon':
+  pids.append(int(path.parent.name))
+print(json.dumps(pids))
+"""
+    assert json.loads(execute(app, "/opt/venv/bin/python", "-c", torrent_pids).stdout) == []
     start_vpn(server)
     wait(
         lambda: is_state(app, "ready"),
-        "real runtime VPN/firewall/DNS and SAB readiness",
+        "real runtime VPN/firewall/DNS, SAB and Transmission readiness",
     )
     execute(
         app,
@@ -459,6 +480,21 @@ else:
     assert app_health(app) == 200
     up = json.loads(execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "up").stdout)
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "proxy-up")
+    native_torrent = json.loads(
+        execute(app, "/opt/venv/bin/python", "/fixture/torrent_probe.py", "setup", NONCE).stdout
+    )
+    assert native_torrent["peer"] == "10.8.0.1", native_torrent
+    torrent_events = [
+        row for row in fixture_events(server) if row.get("case") == "torrent-vpn-" + NONCE
+    ]
+    assert any(row.get("torrent_tracker_peer", "").startswith("10.8.") for row in torrent_events), (
+        torrent_events
+    )
+    assert all("transmission" in row.get("agent", "").lower() for row in torrent_events), (
+        torrent_events
+    )
+    original_torrent = json.loads(execute(app, "/opt/venv/bin/python", "-c", torrent_pids).stdout)
+    assert len(original_torrent) == 1, original_torrent
     # SAB owns the pause state. Do not test a lookalike process or bypass the real HTTP API.
     sab_api = """import json,urllib.parse,urllib.request
 from configobj import ConfigObj
@@ -498,9 +534,41 @@ def call(mode, **params):
     down = json.loads(execute(app, "/opt/venv/bin/python", "/fixture/probe.py", "down").stdout)
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "control")
     execute(control, "/opt/venv/bin/python", "/fixture/probe.py", "proxy-down")
+    execute(app, "/opt/venv/bin/python", "/fixture/torrent_probe.py", "outage", NONCE)
+    # The same native torrent tracker and payload routes remain valid over
+    # both address families. Only the unprotected control may reach them.
+    torrent_controls = json.loads(
+        execute(
+            control,
+            "/opt/venv/bin/python",
+            "-c",
+            """import http.client,json,sys
+addresses={}
+for family,host,port in [('v4','198.18.0.3',8088),('v6','2001:db8:1234::3',8089)]:
+ connection=http.client.HTTPConnection(host,port,timeout=5)
+ connection.connect();addresses[family]=connection.sock.getsockname()[0]
+ connection.request('GET','/torrent/announce?case=torrent-outage-'+family+'-'+sys.argv[1])
+ response=connection.getresponse();assert response.status==200;response.read();connection.close()
+print(json.dumps(addresses))
+""",
+            NONCE,
+        ).stdout
+    )
+    for family in ("v4", "v6"):
+        case = "torrent-outage-" + family + "-" + NONCE
+        observed = [row for row in fixture_events(server) if row.get("case") == case]
+        assert observed, (family, "unprotected tracker control did not arrive")
+        assert all(
+            row.get("torrent_tracker_peer") == torrent_controls[family] for row in observed
+        ), observed
     start_vpn(server)
     wait(lambda: is_state(app, "ready"), "VPN reconnects without resuming queue")
     assert app_health(app) == 200
+    execute(app, "/opt/venv/bin/python", "/fixture/torrent_probe.py", "recover")
+    assert (
+        json.loads(execute(app, "/opt/venv/bin/python", "-c", torrent_pids).stdout)
+        == original_torrent
+    )
     execute(
         app,
         "/opt/venv/bin/python",
@@ -595,6 +663,7 @@ os.kill(vpn,signal.SIGSTOP);os.kill(glt,signal.SIGKILL)
     assert app_health(app) == 503
     remaining_sab = json.loads(execute(app, "/opt/venv/bin/python", "-c", sab_pids).stdout)
     assert remaining_sab == [], {"sab_pids": remaining_sab, "status": app_status(app)}
+    assert json.loads(execute(app, "/opt/venv/bin/python", "-c", torrent_pids).stdout) == []
     children = json.loads(
         execute(
             app,
@@ -616,6 +685,7 @@ print(json.dumps(children))
     docker("restart", "--time", "15", app)
     wait(lambda: is_state(app, "ready"), "restart honors native startup preference")
     assert app_health(app) == 200
+    execute(app, "/opt/venv/bin/python", "/fixture/torrent_probe.py", "restart")
     execute(
         app,
         "/opt/venv/bin/python",
@@ -641,12 +711,7 @@ print(json.dumps(children))
     assert any(
         row.get("event") == "vpn_process_exited" and row.get("signal") == 9 for row in lifecycle
     ), "Typed VPN process exit did not survive in the journal"
-    evidence = []
-    for line in docker("logs", server).stdout.splitlines():
-        try:
-            evidence.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+    evidence = fixture_events(server)
     assert any(row.get("dns_tls_peer", "").startswith("10.8.") for row in evidence), evidence
     assert any(row.get("http_peer", "").startswith("10.8.") for row in evidence), evidence
     assert not any(row.get("http_peer") == "198.19.0.4" for row in evidence), evidence
@@ -675,6 +740,12 @@ print(json.dumps(children))
         "http_connect_proxy_up_and_failclosed": True,
         "unauthenticated_gluetun_controls_rejected": True,
         "outage_origin_still_reachable_by_unprotected_control": True,
+        "native_torrent_download_verified_through_vpn": True,
+        "native_torrent_completed_without_seeding": True,
+        "native_torrent_rpc_authentication_required": True,
+        "native_torrent_ipv4_ipv6_outage_failclosed": True,
+        "native_torrent_state_and_upload_limits_survive_restart": True,
+        "torrent_process_stopped_and_reaped_with_vpn": True,
     }
     print(json.dumps(receipt))
     return receipt

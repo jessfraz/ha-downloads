@@ -2,6 +2,6 @@
 ARG APP_IMAGE=ha-downloads:smoke
 FROM ${APP_IMAGE}
 RUN apk add --no-cache openssl openvpn iptables
-COPY fixture.py probe.py /fixture/
+COPY fixture.py probe.py torrent_probe.py /fixture/
 COPY cert.pem key.pem /fixture/
 RUN cat /fixture/cert.pem >> /etc/ssl/certs/ca-certificates.crt

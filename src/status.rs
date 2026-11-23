@@ -113,11 +113,16 @@ impl Status {
         if self.state != State::Ready {
             reasons.push(HealthReason::NotReady);
         }
-        let checked_at = self
+        let mut checked_at = self
             .diagnostics
             .checked_at_unix_ms
             .zip(self.diagnostics.downloader_checked_at_unix_ms)
             .map(|(protection, downloader)| protection.min(downloader));
+        if self.diagnostics.torrent_check.is_some() {
+            checked_at = checked_at
+                .zip(self.diagnostics.torrent_checked_at_unix_ms)
+                .map(|(other, torrent)| other.min(torrent));
+        }
         let future = self
             .diagnostics
             .checked_at_unix_ms
@@ -125,6 +130,10 @@ impl Status {
             || self
                 .diagnostics
                 .downloader_checked_at_unix_ms
+                .is_some_and(|time| time > now_unix_ms)
+            || self
+                .diagnostics
+                .torrent_checked_at_unix_ms
                 .is_some_and(|time| time > now_unix_ms);
         let age = checked_at
             .filter(|_| !future)
@@ -154,6 +163,10 @@ impl Status {
         }
         if self.downloader.state != DownloaderState::Running
             || !self.diagnostics.downloader_check.passed()
+            || self
+                .diagnostics
+                .torrent_check
+                .is_some_and(|check| !check.passed())
         {
             reasons.push(
                 if self.diagnostics.downloader_check.outcome
@@ -340,6 +353,39 @@ mod tests {
         assert_eq!(
             status.health_at(102_000).reasons,
             vec![HealthReason::NotReady]
+        );
+    }
+    #[test]
+    fn enabled_torrent_readiness_requires_fresh_successful_native_evidence() {
+        let mut status = checked_status();
+        status.diagnostics.torrent_check = Some(Check {
+            outcome: Outcome::Passed,
+            ..Check::default()
+        });
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::ChecksMissing]
+        );
+        status.diagnostics.torrent_checked_at_unix_ms = Some(101_000);
+        assert!(status.health_at(102_000).ready);
+        status.diagnostics.torrent_checked_at_unix_ms = Some(60_000);
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::ChecksStale]
+        );
+        status.diagnostics.torrent_checked_at_unix_ms = Some(103_000);
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::ChecksStale]
+        );
+        status.diagnostics.torrent_checked_at_unix_ms = Some(101_000);
+        status.diagnostics.torrent_check = Some(Check {
+            outcome: Outcome::HttpError,
+            ..Check::default()
+        });
+        assert_eq!(
+            status.health_at(102_000).reasons,
+            vec![HealthReason::DownloaderUnavailable]
         );
     }
     #[test]

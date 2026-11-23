@@ -113,6 +113,10 @@ pub struct Monitoring {
     pub downloader_checked_at_unix_ms: Option<u64>,
     #[serde(default)]
     pub downloader_check: Check,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_check: Option<Check>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_checked_at_unix_ms: Option<u64>,
     pub incident_count: u64,
     pub last_incident: Option<Incident>,
     #[serde(default)]
@@ -233,6 +237,10 @@ pub enum LifecycleEvent {
         exit_code: Option<i32>,
         signal: Option<i32>,
     },
+    TorrentProcessExited {
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+    },
 }
 /// Fixed failure reasons may cross the logging boundary; raw service errors may not.
 #[derive(
@@ -256,6 +264,14 @@ pub enum ServiceFailure {
     DownloaderStartFailed,
     #[error("Downloader configuration could not be prepared. Downloads are stopped.")]
     DownloaderConfigurationFailed,
+    #[error("Torrent downloader exited unexpectedly. Downloads have been stopped.")]
+    TorrentExited,
+    #[error("Torrent downloader service could not start. Downloads are stopped.")]
+    TorrentStartFailed,
+    #[error("Torrent downloader configuration could not be prepared. Downloads are stopped.")]
+    TorrentConfigurationFailed,
+    #[error("Torrent downloader startup timed out. Downloads are stopped.")]
+    TorrentNotReady,
     #[error("The protection runtime failed. Downloads are stopped.")]
     RuntimeFailed,
     #[error("Protected services could not be fully stopped. Restart the app.")]

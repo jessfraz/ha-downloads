@@ -30,6 +30,7 @@ pub struct Context {
     input: Regex,
     value: Regex,
     upstream: reqwest::Url,
+    torrent_upstream: reqwest::Url,
 }
 impl Context {
     pub fn new(access: Access, status: watch::Receiver<Status>) -> anyhow::Result<Self> {
@@ -40,11 +41,13 @@ impl Context {
             client: reqwest::Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
                 .timeout(Duration::from_secs(60))
                 .build()?,
             input: Regex::new(r#"(?i)<input\b[^>]*\bname\s*=\s*["']url_base["'][^>]*>"#)?,
             value: Regex::new(r#"(?i)\bvalue\s*=\s*(?:"[^"]*"|'[^']*')"#)?,
             upstream: reqwest::Url::parse("http://127.0.0.1:8081/")?,
+            torrent_upstream: reqwest::Url::parse("http://127.0.0.1:8082/")?,
         })
     }
     pub fn token_hash(token: &str) -> Option<[u8; 32]> {
@@ -281,6 +284,13 @@ async fn delete(
     let path = downloader_path(&r);
     proxy(r, path, body.as_bytes().to_vec()).await
 }
+#[endpoint {method=POST,path="/transmission/rpc",unpublished=true,tags=["downloader"]}]
+async fn torrent_rpc(
+    r: RequestContext<Arc<Context>>,
+    body: UntypedBody,
+) -> Result<Response<Body>, HttpError> {
+    proxy(r, "transmission/rpc".into(), body.as_bytes().to_vec()).await
+}
 fn connection_headers(headers: &HeaderMap) -> HashSet<String> {
     headers
         .get_all("connection")
@@ -309,19 +319,34 @@ async fn proxy(
     path: String,
     body: Vec<u8>,
 ) -> Result<Response<Body>, HttpError> {
-    if path != "sabnzbd" && !path.starts_with("sabnzbd/") {
+    let torrent = path == "transmission/rpc";
+    if !torrent && path != "sabnzbd" && !path.starts_with("sabnzbd/") {
         return Err(denied(ClientErrorStatusCode::NOT_FOUND, "Page not found."));
     }
     let is_ingress = matches!(r.context().access, Access::Ingress { .. });
     if is_ingress {
         ingress(&r)?;
-    } else if path.trim_end_matches('/') != "sabnzbd/api" {
+    } else if !torrent && path.trim_end_matches('/') != "sabnzbd/api" {
         return Err(forbidden());
     }
     if r.context().status.borrow().downloader.state != DownloaderState::Running {
         return Err(HttpError::for_unavail(
             None,
             "Downloader is stopped while protection is unavailable.".into(),
+        ));
+    }
+    if torrent
+        && !r
+            .context()
+            .status
+            .borrow()
+            .diagnostics
+            .torrent_check
+            .is_some_and(|check| check.passed())
+    {
+        return Err(HttpError::for_unavail(
+            None,
+            "Torrent downloader is unavailable.".into(),
         ));
     }
     if is_ingress && r.request.method() != Method::GET {
@@ -351,7 +376,12 @@ async fn proxy(
             }
         }
     }
-    let mut target = r.context().upstream.join(&path).map_err(|_| {
+    let upstream = if torrent {
+        &r.context().torrent_upstream
+    } else {
+        &r.context().upstream
+    };
+    let mut target = upstream.join(&path).map_err(|_| {
         denied(
             ClientErrorStatusCode::BAD_REQUEST,
             "Invalid downloader path.",
@@ -364,6 +394,14 @@ async fn proxy(
         .client
         .request(r.request.method().clone(), target);
     for (name, value) in r.request.headers() {
+        if torrent
+            && !matches!(
+                name.as_str(),
+                "content-type" | "accept" | "x-transmission-session-id"
+            )
+        {
+            continue;
+        }
         if !hop(name, &skip)
             && !matches!(
                 name.as_str(),
@@ -378,6 +416,32 @@ async fn proxy(
         {
             request = request.header(name, value);
         }
+    }
+    if torrent {
+        // Only native RPC credentials can cross this boundary. Never forward a
+        // Home Assistant or Downloads bearer token to another service.
+        let authorization = r
+            .request
+            .headers()
+            .get("authorization")
+            .filter(|value| {
+                value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.split_once(' '))
+                    .is_some_and(|(scheme, value)| {
+                        scheme.eq_ignore_ascii_case("Basic") && !value.is_empty()
+                    })
+            })
+            .ok_or_else(|| {
+                denied(
+                    ClientErrorStatusCode::UNAUTHORIZED,
+                    "Native torrent RPC credentials are required.",
+                )
+            })?;
+        let mut authorization = authorization.clone();
+        authorization.set_sensitive(true);
+        request = request.header("authorization", authorization);
     }
     let mut response = request
         .body(body)
@@ -517,6 +581,7 @@ pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     api.register(post)?;
     api.register(put)?;
     api.register(delete)?;
+    api.register(torrent_rpc)?;
     crate::media::http::register(&mut api)?;
     Ok(api)
 }
@@ -854,6 +919,79 @@ mod http_tests {
         .expect("context");
         context.upstream = upstream;
         api::start(listener(), Arc::new(context)).expect("proxy server")
+    }
+    #[tokio::test]
+    async fn torrent_rpc_forwards_only_native_auth_and_preserves_session_handshake() {
+        let (target, captured) = upstream(|_| b"HTTP/1.1 409 Conflict\r\nX-Transmission-Session-Id: native-session\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()).await;
+        let mut status = Status::ready("test", None, true, true);
+        status.diagnostics.torrent_check = Some(crate::monitor::Check {
+            outcome: crate::monitor::Outcome::Passed,
+            ..crate::monitor::Check::default()
+        });
+        let (_, rx) = watch::channel(status);
+        let mut context = Context::new(Access::Direct { token_hash: None }, rx).expect("context");
+        context.torrent_upstream = target;
+        let server = api::start(listener(), Arc::new(context)).expect("server");
+        let url = format!("http://{}/transmission/rpc", server.local_addr());
+        for authorization in [None, Some("Bearer downloads-role-token")] {
+            let mut request = client().post(&url);
+            if let Some(authorization) = authorization {
+                request = request.header("authorization", authorization);
+            }
+            assert_eq!(
+                request.send().await.expect("response").status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let response = client()
+            .post(&url)
+            .basic_auth("native-user", Some("native-password"))
+            .header("x-transmission-session-id", "previous-session")
+            .header("cookie", "ingress_session=must-not-forward-cookie")
+            .header("x-remote-user-id", "must-not-forward")
+            .header("x-remote-user-groups", "system-admin")
+            .header("x-ingress-path", "/api/hassio_ingress/test")
+            .header("content-type", "application/json")
+            .body(r#"{"method":"session-get"}"#)
+            .send()
+            .await
+            .expect("native response");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response.headers()["x-transmission-session-id"],
+            "native-session"
+        );
+        let request = captured.await.expect("captured RPC");
+        let lower = request.head.to_ascii_lowercase();
+        assert!(request.head.starts_with("POST /transmission/rpc HTTP/1.1"));
+        assert!(lower.contains("authorization: basic "));
+        assert!(lower.contains("x-transmission-session-id: previous-session"));
+        assert!(!lower.contains("must-not-forward"));
+        assert!(!lower.contains("x-remote-user-groups"));
+        assert!(!lower.contains("x-ingress-path"));
+        assert!(!lower.contains("cookie:"));
+        assert_eq!(request.body, br#"{"method":"session-get"}"#);
+        server.close().await.expect("close");
+    }
+    #[tokio::test]
+    async fn disabled_torrent_rpc_and_native_web_ui_are_not_exposed() {
+        let (_, rx) = watch::channel(Status::ready("test", None, true, true));
+        let context = Context::new(Access::Direct { token_hash: None }, rx).expect("context");
+        let server = api::start(listener(), Arc::new(context)).expect("server");
+        let response = client()
+            .post(format!("http://{}/transmission/rpc", server.local_addr()))
+            .basic_auth("native-user", Some("native-password"))
+            .send()
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let response = client()
+            .get(format!("http://{}/transmission/web/", server.local_addr()))
+            .send()
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        server.close().await.expect("close");
     }
     #[derive(Deserialize)]
     struct NativeSettings {

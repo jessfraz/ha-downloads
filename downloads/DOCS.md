@@ -45,6 +45,39 @@ is also off by default. Configure only trusted internal applications to use it
 for external indexer requests; keep local application API calls out of the
 proxy. Do not expose an unauthenticated proxy to a LAN or the internet.
 
+## Optional torrents
+
+Enable `torrents.enabled` and configure a dedicated `torrents.username` and
+`torrents.password` in the app settings. The password must contain at least 32
+characters. Keep the credential in 1Password and the masked app/native manager
+settings, never in a repository. Torrents are disabled by default.
+
+Transmission starts only after the existing Gluetun VPN, firewall and resolver
+checks pass. It shares that network namespace with SABnzbd, including DNS and
+IPv6 protection. Its native RPC listener is loopback-only. The authenticated
+RPC bridge is available to local media managers on the existing internal API
+port; no additional host port, Docker access or router forwarding is needed.
+
+Add a **Transmission** download client in Radarr and Sonarr using the Downloads
+app's internal hostname, port `8080`, URL base `/transmission/`, and the dedicated
+RPC credentials. Keep the direct host port unmapped. Prowlarr owns torrent
+indexers and their synchronization to the managers; enabling a client alone
+does not add sources. Quality profiles and existing Usenet clients are unchanged.
+
+New Transmission settings stop completed torrents immediately (global seed ratio
+zero), cap uploads during downloading at **1 KiB/s**, disable alternate-speed
+mode, and keep its alternate upload limit equally low. Zero is not an upload
+limit: it means unlimited. New settings also disable UPnP/NAT-PMP, local peer
+discovery and completion scripts, limit downloads to two at once, and bound peer
+connections to 60 globally and 30 per torrent. Native path, queue and speed
+settings persist; app startup enforces only RPC isolation and authentication.
+Do not configure manager/indexer seeding overrides that re-enable uploading.
+
+New downloads default to `/media/downloads/torrents`, with an incomplete
+subdirectory. Configure native paths to the existing verified media mount before
+adding downloads. Only configuration and resume state live in
+`/data/transmission`; the existing encrypted cold backup covers them.
+
 ## Movie and TV requests
 
 Set `media.radarr.url` and/or `media.sonarr.url` to reachable native manager

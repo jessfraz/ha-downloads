@@ -1,9 +1,9 @@
 [package]
 name = "ha-downloads"
-version = "0.4.10"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
-description = "VPN-protected Usenet downloads for Home Assistant"
+description = "VPN-protected Usenet and torrent downloads for Home Assistant"
 repository = "https://github.com/jessfraz/ha-downloads"
 default-run = "downloads"
 

@@ -6,6 +6,12 @@ SABnzbd downloads through a Gluetun VPN. The downloader waits for the VPN,
 firewall, and DNS checks to pass. SABnzbd's **Start paused** setting controls the
 queue after an app restart; its default allows downloads to resume automatically.
 
+Optional Transmission support adds torrents inside the same protected network
+namespace. It uses the same VPN, firewall and DNS, not a separate proxy-only
+route. Enable it in the app's `torrents` options with dedicated RPC credentials.
+Completed torrents stop instead of seeding; uploads during downloading default
+to 1 KiB/s. Existing movie and TV quality rules remain unchanged.
+
 The app uses NET_ADMIN, NET_RAW and `/dev/net/tun`. It does not use host networking,
 the Docker socket, Home Assistant's API, or Supervisor management APIs. Scoped
 Supervisor discovery pairs the optional HA companion. Media

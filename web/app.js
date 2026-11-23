@@ -106,7 +106,9 @@ import { shell } from "./shell.js";
       return parts.join(" · ");
     };
     const list = byId("diagnostic-checks");
-    list.replaceChildren(...names.map(([name, label]) => { const row = document.createElement("li"); row.textContent = `${label}: ${describe(name === "downloader" ? monitoring.downloader_check : monitoring.checks[name])}`; return row; }));
+    const checks = names.map(([name, label]) => [label, name === "downloader" ? monitoring.downloader_check : monitoring.checks[name]]);
+    if (monitoring.torrent_check) checks.push(["Torrent downloader API", monitoring.torrent_check]);
+    list.replaceChildren(...checks.map(([label, check]) => { const row = document.createElement("li"); row.textContent = `${label}: ${describe(check)}`; return row; }));
     const incident = monitoring.last_incident;
     const history = byId("diagnostic-history");
     if (incident && Number.isFinite(incident.duration_ms)) {
@@ -115,7 +117,7 @@ import { shell } from "./shell.js";
     } else history.textContent = "No failed-check period recorded since startup.";
     const failure = monitoring.last_failure;
     if (failure) {
-      const reasons = { vpn_exited: "VPN service exited", downloader_exited: "Downloader exited", vpn_not_ready: "VPN startup timed out", downloader_not_ready: "Downloader startup timed out", protection_checks_failed: "Protection checks failed", vpn_start_failed: "VPN service could not start", downloader_start_failed: "Downloader could not start", downloader_configuration_failed: "Downloader configuration failed", runtime_failed: "Protection runtime failed", cleanup_failed: "Services could not fully stop" };
+      const reasons = { vpn_exited: "VPN service exited", downloader_exited: "Downloader exited", vpn_not_ready: "VPN startup timed out", downloader_not_ready: "Downloader startup timed out", protection_checks_failed: "Protection checks failed", vpn_start_failed: "VPN service could not start", downloader_start_failed: "Downloader could not start", downloader_configuration_failed: "Downloader configuration failed", torrent_exited: "Torrent downloader exited", torrent_not_ready: "Torrent downloader startup timed out", torrent_start_failed: "Torrent downloader could not start", torrent_configuration_failed: "Torrent downloader configuration failed", runtime_failed: "Protection runtime failed", cleanup_failed: "Services could not fully stop" };
       const details = [reasons[failure.reason] || "Protected service failed"];
       if (Number.isInteger(failure.exit_code)) details.push(`exit ${failure.exit_code}`);
       if (Number.isInteger(failure.signal)) details.push(`signal ${failure.signal}`);

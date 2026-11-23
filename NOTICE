@@ -16,6 +16,14 @@ The container also distributes separate upstream programs and libraries:
 * SABnzbd Python dependencies, including sabctools, are pinned with source and
   wheel hashes in uv.lock. Installed distribution metadata and license notices
   are retained under /opt/venv/lib/python3.12/site-packages.
+* Transmission 4.1.4, by the Transmission project (GPL-2.0-only OR GPL-3.0-only,
+  with an OpenSSL linking exception):
+  https://github.com/transmission/transmission/tree/4.1.4
+  The headless daemon is built from the unmodified official release archive,
+  pinned by SHA256 in Dockerfile. Its license is retained at
+  /usr/share/licenses/downloads/transmission.txt. Corresponding source is at
+  /usr/share/licenses/downloads/transmission-source.tar.xz and
+  https://github.com/transmission/transmission/releases/download/4.1.4/transmission-4.1.4.tar.xz.
 * UnRAR 7.3.2 is compiled from RARLAB's unmodified official source:
   https://www.rarlab.com/rar/unrarsrc-7.3.2.tar.gz
   Its full redistribution license is retained at

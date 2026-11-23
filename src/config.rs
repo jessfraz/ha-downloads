@@ -12,6 +12,39 @@ pub struct Config {
     #[serde(deserialize_with = "secret")]
     pub api_token: Zeroizing<String>,
     pub media: MediaConfig,
+    pub torrents: TorrentConfig,
+}
+#[derive(Clone, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct TorrentConfig {
+    pub enabled: bool,
+    pub username: String,
+    #[serde(deserialize_with = "secret")]
+    pub password: Zeroizing<String>,
+}
+impl fmt::Debug for TorrentConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TorrentConfig")
+            .field("enabled", &self.enabled)
+            .field("credentials", &"[REDACTED]")
+            .finish()
+    }
+}
+impl TorrentConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.enabled
+            && (self.username.is_empty()
+                || self.username.len() > 128
+                || self.username.chars().any(|c| c.is_control() || c == ':')
+                || self.password.len() < 32
+                || self.password.len() > 4096
+                || self.password.starts_with('{')
+                || self.password.chars().any(char::is_control))
+        {
+            return Err(ConfigError::Torrent);
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
@@ -186,6 +219,8 @@ pub enum ConfigError {
         "Cannot load private app pairing credentials. Existing credentials must remain private and valid."
     )]
     ManagedCredential,
+    #[error("Enabled torrents need an RPC username and a password of at least 32 characters.")]
+    Torrent,
 }
 
 struct AppRuntime {
@@ -287,6 +322,7 @@ impl Config {
             }
         }
         self.network.validate()?;
+        self.torrents.validate()?;
         if !self.api_token.is_empty()
             && (self.api_token.len() < 32 || self.api_token.chars().any(char::is_control))
         {
@@ -316,6 +352,32 @@ mod tests {
         let d = format!("{c:?}");
         assert!(!d.contains("secret"));
         assert!(!d.contains("user"));
+    }
+    #[test]
+    fn torrent_enablement_requires_valid_private_rpc_credentials() {
+        let mut config = configured();
+        assert!(config.validate().is_ok());
+        config.torrents.enabled = true;
+        assert!(matches!(config.validate(), Err(ConfigError::Torrent)));
+        config.torrents.username = "torrent-fixture".into();
+        config.torrents.password = zeroize::Zeroizing::new("a".repeat(32));
+        assert!(config.validate().is_ok());
+        let debug = format!("{:?}", config.torrents);
+        assert!(!debug.contains("torrent-fixture"));
+        assert!(!debug.contains(config.torrents.password.as_str()));
+        for username in ["", "user:password", "user\n"] {
+            config.torrents.username = username.into();
+            assert!(matches!(config.validate(), Err(ConfigError::Torrent)));
+        }
+        config.torrents.username = "torrent-fixture".into();
+        for password in [
+            "short".to_owned(),
+            "a".repeat(4097),
+            format!("{}\n", "a".repeat(32)),
+        ] {
+            config.torrents.password = zeroize::Zeroizing::new(password);
+            assert!(matches!(config.validate(), Err(ConfigError::Torrent)));
+        }
     }
     #[test]
     fn public_bypasses_are_rejected() {

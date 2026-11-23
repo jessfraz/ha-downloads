@@ -6,4 +6,5 @@ pub mod media;
 pub mod monitor;
 pub mod runtime;
 pub mod status;
+pub mod torrent;
 pub mod vpn;
