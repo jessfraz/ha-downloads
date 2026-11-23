@@ -28,9 +28,9 @@ dependencies = [
   "sgmllib3k==1.0.0",
   "portend==3.2.1",
   "pysocks==1.7.1",
-  "puremagic==2.2.0",
+  "puremagic==2.3.0",
   "rarfile==4.5",
-  "guessit==4.4.0",
+  "guessit==4.5.4",
   "babelfish==0.6.1",
   "rebulk==6.0.2",
   "hachoir==3.4.0",
@@ -53,7 +53,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff==0.17.5", "pyyaml==6.0.3"]
+dev = ["ruff==0.17.6", "pyyaml==6.0.3"]
 
 [tool.uv]
 package = false
