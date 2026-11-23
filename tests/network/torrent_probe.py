@@ -57,6 +57,97 @@ def no_seeding() -> None:
     assert session["speed-limit-up"] == 1, session
 
 
+def manager_handshake(stale_session: str | None = None) -> str:
+    options = json.loads(Path("/data/options.json").read_text())["torrents"]
+    authorization = (
+        "Basic "
+        + base64.b64encode((options["username"] + ":" + options["password"]).encode()).decode()
+    )
+    if stale_session is not None:
+        request = urllib.request.Request(
+            RPC_URL,
+            data=b'{"method":"session-get"}',
+            headers={
+                "Authorization": authorization,
+                "X-Transmission-Session-Id": stale_session,
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            OPENER.open(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            with error:
+                assert error.code == 409, "Restart did not reject the previous native session"
+                assert error.headers.get("X-Transmission-Session-Id") != stale_session, (
+                    "Restart reused the previous native session"
+                )
+        else:
+            raise AssertionError("Restart accepted the previous native session")
+    session = None
+    for port in (8082, 8080):
+        url = f"http://127.0.0.1:{port}/transmission/rpc"
+        request = urllib.request.Request(url, headers={"Authorization": authorization})
+        try:
+            OPENER.open(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            with error:
+                assert error.code == 409, (
+                    f"GET RPC session challenge returned {error.code}, expected 409 on port {port}"
+                )
+                session = error.headers.get("X-Transmission-Session-Id")
+                assert session, "Native GET handshake omitted its session header"
+        else:
+            raise AssertionError("Native GET handshake accepted a missing session header")
+    assert session
+    headers = {
+        "Authorization": authorization,
+        "X-Transmission-Session-Id": session,
+        "Content-Type": "application/json",
+    }
+    # Radarr/Sonarr obtain the native challenge using GET, then reuse it for
+    # their first authenticated POST. Exercise that exact client sequence.
+    request = urllib.request.Request(RPC_URL, headers=headers, data=b'{"method":"session-get"}')
+    with OPENER.open(request, timeout=5) as response:
+        result = json.load(response)
+    assert result["result"] == "success", "Native GET challenge did not authorize the POST"
+    assert result["arguments"]["version"], "Native POST omitted its version"
+    before = result["arguments"]["speed-limit-up"]
+    for port in (8080, 8082):
+        for method in ("GET", "POST"):
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/transmission/rpc",
+                method=method,
+                data=b'{"method":"session-get"}' if method == "POST" else None,
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                OPENER.open(request, timeout=5)
+            except urllib.error.HTTPError as error:
+                with error:
+                    assert error.code == 401, error.code
+                    challenge = error.headers.get("WWW-Authenticate", "")
+                    assert challenge.split(" ", 1)[0].lower() == "basic", (
+                        "Anonymous RPC omitted its native Basic authentication challenge"
+                    )
+            else:
+                raise AssertionError("Native torrent RPC accepted anonymous access")
+    mutation = {"method": "session-set", "arguments": {"speed-limit-up": 33}}
+    query = urllib.parse.urlencode(
+        {"method": mutation["method"], "arguments": json.dumps(mutation["arguments"])}
+    )
+    for suffix, body in (("?" + query, None), ("", json.dumps(mutation).encode())):
+        request = urllib.request.Request(RPC_URL + suffix, method="GET", headers=headers, data=body)
+        try:
+            OPENER.open(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            with error:
+                assert error.code == 400, "GET RPC accepted a query or body"
+        else:
+            raise AssertionError("GET RPC accepted mutation parameters")
+    assert rpc("session-get")["speed-limit-up"] == before, "Rejected GET mutated native settings"
+    return session
+
+
 def string(value: bytes) -> bytes:
     return str(len(value)).encode() + b":" + value
 
@@ -130,23 +221,14 @@ def save(state: dict[str, object]) -> None:
 
 
 def setup(nonce: str) -> None:
-    for port in (8080, 8082):
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}/transmission/rpc",
-            data=b'{"method":"session-get"}',
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            OPENER.open(request, timeout=5)
-        except urllib.error.HTTPError as error:
-            assert error.code == 401, error.code
-        else:
-            raise AssertionError("Native torrent RPC accepted anonymous access")
+    session = manager_handshake()
     no_seeding()
     name = "torrent-vpn-" + nonce
     item = add_torrent(name, "http://" + name + ".example.com:8088")
     peer = wait_completed(item, require_peer=True)
-    save({"initial": item})
+    # This is only the generated fixture's CSRF nonce, never authentication.
+    # Keep it private and unprinted to exercise the real stale-session recovery.
+    save({"initial": item, "rpc_session": session})
     print(
         json.dumps({"native_torrent_downloaded_and_stopped": True, "case": name, "peer": peer}),
         flush=True,
@@ -177,8 +259,11 @@ def verify(restarted: bool) -> None:
     wait_completed(state["outage_ipv4"])
     assert completed_and_stopped(state["initial"]), torrents()
     if restarted:
+        manager_handshake(stale_session=state["rpc_session"])
         current = {row["hashString"] for row in torrents()}
-        assert all(item["hash"] in current for item in state.values()), current
+        assert all(
+            state[key]["hash"] in current for key in ("initial", "outage_ipv4", "outage_ipv6")
+        ), current
     print(json.dumps({"native_torrent_state_preserved": True, "restarted": restarted}), flush=True)
 
 
@@ -188,6 +273,9 @@ if __name__ == "__main__":
         setup(sys.argv[2])
     elif action == "outage":
         outage(sys.argv[2])
+    elif action == "handshake":
+        manager_handshake()
+        print(json.dumps({"native_manager_get_handshake": True, "get_mutations_rejected": True}))
     elif action in ("recover", "restart"):
         verify(action == "restart")
     else:

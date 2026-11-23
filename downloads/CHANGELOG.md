@@ -1,3 +1,8 @@
+# 0.5.1
+
+- Support the native Radarr/Sonarr Transmission authentication handshake while
+  keeping GET requests read-only and requiring dedicated RPC credentials.
+
 # 0.5.0
 
 - Add optional Transmission torrents inside the existing Gluetun VPN boundary,

@@ -742,7 +742,7 @@ source = "git+https://github.com/jessfraz/ha-app-kit?tag=v0.1.8#df48da20903e39e6
 
 [[package]]
 name = "ha-downloads"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",

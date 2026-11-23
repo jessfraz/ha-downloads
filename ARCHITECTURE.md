@@ -9,6 +9,8 @@ It cannot use an untunneled peer, tracker, web-seed or DNS route. Its native RPC
 binds only loopback; the existing internal API proxies the exact
 `/transmission/rpc` route and requires Transmission's own Basic authentication.
 HA identity and role bearer credentials are never forwarded to that daemon.
+Native clients may use a bodyless, queryless GET for the authentication
+handshake; RPC commands remain POST-only.
 
 The app never uses host networking, the Docker socket, host PID/IPC namespaces,
 Home Assistant's API, or Supervisor management APIs. The scoped Supervisor
